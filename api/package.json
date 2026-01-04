@@ -14,7 +14,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
     "@azure/functions": "^4.0.0",
-    "@azure/search-documents": "^12.2.0"
+    "@azure/search-documents": "^12.2.0",
+    "crypto-browserify": "^3.12.1"
   },
   "devDependencies": {
     "@types/node": "^25.0.3",

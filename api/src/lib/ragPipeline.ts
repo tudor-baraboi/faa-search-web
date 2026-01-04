@@ -1,3 +1,6 @@
+// Load polyfills first
+import "./polyfills";
+
 import { SearchClient } from "@azure/search-documents";
 import Anthropic from "@anthropic-ai/sdk";
 import { Document, RAGResponse, SearchDocument } from "./types";

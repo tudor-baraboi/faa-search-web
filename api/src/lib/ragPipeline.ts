@@ -21,10 +21,9 @@ export class AircraftCertificationRAG {
     console.log(`🔍 Searching FAA regulations for: '${query}'`);
 
     try {
-      // Hybrid search: both semantic (vector) and keyword
-      // Using 'as any' to work around TypeScript SDK type limitations
-      // The Python SDK uses vector_queries which works correctly
-      const results = await this.searchClient.search(query, {
+      // Try vector search first
+      console.log('  Attempting vector search...');
+      const vectorResults = await this.searchClient.search(query, {
         vectorQueries: [
           {
             kind: "text",
@@ -39,7 +38,7 @@ export class AircraftCertificationRAG {
 
       // Format results
       const retrievedDocs: Document[] = [];
-      for await (const result of results.results) {
+      for await (const result of vectorResults.results) {
         retrievedDocs.push({
           chunk: result.document.chunk || "",
           title: result.document.title || "Unknown",
@@ -47,10 +46,35 @@ export class AircraftCertificationRAG {
         });
       }
 
-      console.log(`  ✓ Found ${retrievedDocs.length} relevant regulation sections`);
-      return retrievedDocs;
+      if (retrievedDocs.length > 0) {
+        console.log(`  ✓ Found ${retrievedDocs.length} relevant regulation sections via vector search`);
+        return retrievedDocs;
+      }
+
+      // Fallback to keyword search if vector search returns nothing
+      console.log('  Vector search returned 0 results, falling back to keyword search...');
+      const keywordResults = await this.searchClient.search(query, {
+        select: ["chunk", "title"],
+        top: topK
+      });
+
+      const keywordDocs: Document[] = [];
+      for await (const result of keywordResults.results) {
+        keywordDocs.push({
+          chunk: result.document.chunk || "",
+          title: result.document.title || "Unknown",
+          score: result.score || 0
+        });
+      }
+
+      console.log(`  ✓ Found ${keywordDocs.length} relevant regulation sections via keyword search`);
+      return keywordDocs;
     } catch (error) {
       console.error(`  ❌ Search error:`, error);
+      if (error instanceof Error) {
+        console.error(`  ❌ Error message: ${error.message}`);
+        console.error(`  ❌ Error stack: ${error.stack}`);
+      }
       return [];
     }
   }

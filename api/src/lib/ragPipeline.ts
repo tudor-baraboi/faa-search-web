@@ -75,7 +75,8 @@ export class AircraftCertificationRAG {
         console.error(`  ❌ Error message: ${error.message}`);
         console.error(`  ❌ Error stack: ${error.stack}`);
       }
-      return [];
+      // Re-throw the error so we can see it in the response
+      throw error;
     }
   }
 
@@ -101,15 +102,26 @@ export class AircraftCertificationRAG {
    */
   async askQuestion(question: string): Promise<RAGResponse> {
     // Step 1: Retrieve relevant documents
-    const documents = await this.searchFAARegulations(question);
+    let documents: Document[];
+    let searchError: string | undefined;
+
+    try {
+      documents = await this.searchFAARegulations(question);
+    } catch (error) {
+      searchError = error instanceof Error ? error.message : String(error);
+      console.error("Search failed with error:", searchError);
+      documents = [];
+    }
 
     if (documents.length === 0) {
       return {
-        answer: "I couldn't find relevant information in the FAA regulations and guidance materials.",
+        answer: searchError
+          ? `Search failed: ${searchError}`
+          : "I couldn't find relevant information in the FAA regulations and guidance materials.",
         sources: [],
         sourceCount: 0,
         context: "",
-        error: undefined
+        error: searchError
       };
     }
 

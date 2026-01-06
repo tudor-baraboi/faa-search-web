@@ -6,6 +6,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Document, RAGResponse, SearchDocument } from "./types";
 import { createSearchClient } from "./azureSearch";
 import { createAnthropicClient } from "./anthropic";
+import { DRSClient } from "./drsClient";
+import { evaluateSearchResults, extractDocumentType, SearchDocument as EvalSearchDocument } from "./searchEvaluator";
 
 export class AircraftCertificationRAG {
   private searchClient: SearchClient<SearchDocument>;
@@ -101,12 +103,13 @@ export class AircraftCertificationRAG {
 
   /**
    * Main RAG pipeline: retrieve + generate answer
-   * Ported from Python: faa-search.py lines 135-210
+   * Enhanced with DRS fallback when Azure Search results are insufficient
    */
   async askQuestion(question: string): Promise<RAGResponse> {
-    // Step 1: Retrieve relevant documents
+    // Step 1: Retrieve relevant documents from Azure Search
     let documents: Document[];
     let searchError: string | undefined;
+    let fallbackUsed = false;
 
     try {
       documents = await this.searchFAARegulations(question);
@@ -116,24 +119,100 @@ export class AircraftCertificationRAG {
       documents = [];
     }
 
+    // Step 2: Evaluate search quality and potentially fallback to DRS
+    const evalDocs: EvalSearchDocument[] = documents.map(d => ({
+      title: d.title,
+      score: d.score,
+      chunk: d.chunk
+    }));
+
+    const quality = evaluateSearchResults(evalDocs, question);
+    console.log(`📊 Search quality: ${quality.reason} (score: ${quality.score.toFixed(2)})`);
+
+    if (!quality.isSufficient) {
+      console.log('🔄 Azure Search insufficient, attempting DRS fallback...');
+
+      try {
+        const drsResult = await this.fetchFromDRS(question, quality.specificDocMentioned);
+
+        if (drsResult) {
+          documents = drsResult.documents;
+          fallbackUsed = true;
+          console.log(`✅ DRS fallback successful: ${documents.length} document(s) retrieved`);
+        }
+      } catch (drsError) {
+        console.error('❌ DRS fallback failed:', drsError);
+        // Continue with whatever Azure Search results we have
+      }
+    }
+
     if (documents.length === 0) {
       return {
         answer: searchError
           ? `Search failed: ${searchError}`
-          : "I couldn't find relevant information in the FAA regulations and guidance materials.",
+          : "I couldn't find relevant information in the FAA regulations and guidance materials. The document may not be available in our index or the FAA DRS system.",
         sources: [],
         sourceCount: 0,
         context: "",
-        error: searchError
+        error: searchError,
+        fallbackUsed
       };
     }
 
-    // Step 2: Format context
+    // Step 3: Format context
     const context = this.formatContext(documents);
 
-    // Step 3: Create prompt for Claude
-    // CRITICAL: This system prompt is copied EXACTLY from Python (lines 158-175)
-    const systemPrompt = `You are an FAA aircraft certification expert with deep knowledge of aviation regulations and guidance materials.
+    // Step 4: Create prompt for Claude
+    const systemPrompt = this.buildSystemPrompt(fallbackUsed);
+
+    const userMessage = `${context}
+
+User Question: ${question}
+
+Please answer based on the FAA regulations and guidance materials provided above.`;
+
+    // Step 5: Call Claude
+    console.log("🤖 Generating answer with Claude...");
+
+    try {
+      const response = await this.anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 2048,
+        system: systemPrompt,
+        messages: [
+          { role: "user", content: userMessage }
+        ]
+      });
+
+      const answer = response.content[0].type === "text" ? response.content[0].text : "";
+
+      // Step 6: Return answer with sources
+      return {
+        answer,
+        sources: documents.map(doc => doc.title),
+        sourceCount: documents.length,
+        context,
+        error: undefined,
+        fallbackUsed
+      };
+    } catch (error) {
+      console.error("Error generating answer:", error);
+      return {
+        answer: "",
+        sources: [],
+        sourceCount: 0,
+        context: "",
+        error: `Error generating answer: ${error instanceof Error ? error.message : String(error)}`,
+        fallbackUsed
+      };
+    }
+  }
+
+  /**
+   * Build system prompt for Claude, optionally noting DRS source
+   */
+  private buildSystemPrompt(fromDRS: boolean): string {
+    const basePrompt = `You are an FAA aircraft certification expert with deep knowledge of aviation regulations and guidance materials.
 
 Your role is to answer questions based ONLY on the provided FAA regulations, advisory circulars, and guidance documents.
 
@@ -152,44 +231,65 @@ Rules:
 
 Answer questions clearly and professionally, as if advising an aircraft manufacturer, engineering team, or certification applicant.`;
 
-    const userMessage = `${context}
+    if (fromDRS) {
+      return basePrompt + `
 
-User Question: ${question}
+Note: The provided document was retrieved directly from the FAA Dynamic Regulatory System (DRS). This is the official, authoritative source for FAA regulatory documents.`;
+    }
 
-Please answer based on the FAA regulations and guidance materials provided above.`;
+    return basePrompt;
+  }
 
-    // Step 4: Call Claude
-    console.log("🤖 Generating answer with Claude...");
+  /**
+   * Fetch document from FAA DRS API
+   */
+  private async fetchFromDRS(
+    question: string,
+    specificDoc?: string
+  ): Promise<{ documents: Document[] } | null> {
+    const drsClient = new DRSClient();
+
+    // Determine document type from query
+    const docType = extractDocumentType(question);
+    console.log(`📡 Searching DRS for: "${question}" (type: ${docType || 'default'})`);
 
     try {
-      const response = await this.anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 2048,
-        system: systemPrompt,
-        messages: [
-          { role: "user", content: userMessage }
-        ]
-      });
+      // Search DRS for relevant documents
+      const drsResults = await drsClient.searchDocuments(question, docType);
 
-      const answer = response.content[0].type === "text" ? response.content[0].text : "";
+      if (drsResults.length === 0) {
+        console.log('⚠️ No documents found in DRS');
+        return null;
+      }
 
-      // Step 5: Return answer with sources
+      // Get the top result that has a download URL
+      const topResult = drsResults.find(doc => doc.mainDocumentDownloadURL);
+      if (!topResult || !topResult.mainDocumentDownloadURL) {
+        console.log('⚠️ No downloadable document found in DRS results');
+        return null;
+      }
+      console.log(`📥 Downloading: ${topResult.title}`);
+
+      // Download and extract PDF content
+      const pdfBuffer = await drsClient.downloadDocument(topResult.mainDocumentDownloadURL);
+      const pdfText = await drsClient.extractTextFromPDF(pdfBuffer);
+
+      // Truncate if too long (Claude has context limits)
+      const maxChars = 50000;
+      const truncatedText = pdfText.length > maxChars
+        ? pdfText.substring(0, maxChars) + "\n\n[Document truncated due to length...]"
+        : pdfText;
+
       return {
-        answer,
-        sources: documents.map(doc => doc.title),
-        sourceCount: documents.length,
-        context,
-        error: undefined
+        documents: [{
+          title: topResult.title,
+          chunk: truncatedText,
+          score: 1.0  // Direct fetch, highest relevance
+        }]
       };
     } catch (error) {
-      console.error("Error generating answer:", error);
-      return {
-        answer: "",
-        sources: [],
-        sourceCount: 0,
-        context: "",
-        error: `Error generating answer: ${error instanceof Error ? error.message : String(error)}`
-      };
+      console.error('❌ DRS fetch error:', error);
+      throw error;
     }
   }
 }

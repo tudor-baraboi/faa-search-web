@@ -9,6 +9,7 @@ export interface Message {
   sourceCount: number;
   context: string;
   error?: string;
+  fallbackUsed?: boolean;  // True if DRS API was used instead of Azure Search
 }
 
 export interface ConversationState {
@@ -24,6 +25,7 @@ export interface RAGResponse {
   sourceCount: number;
   context: string;
   error?: string;
+  fallbackUsed?: boolean;  // True if DRS API was used instead of Azure Search
 }
 
 export interface AskQuestionRequest {

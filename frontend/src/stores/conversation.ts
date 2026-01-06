@@ -40,7 +40,8 @@ export const conversationActions = {
         sources: response.sources,
         sourceCount: response.sourceCount,
         context: response.context,
-        error: response.error
+        error: response.error,
+        fallbackUsed: response.fallbackUsed
       };
 
       // Add message to store

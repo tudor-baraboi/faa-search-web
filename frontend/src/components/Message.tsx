@@ -1,8 +1,15 @@
 import type { Component } from "solid-js";
 import { Show } from "solid-js";
+import { marked } from "marked";
 import type { Message as MessageType } from "../types";
 import SourceList from "./SourceList";
 import ContextViewer from "./ContextViewer";
+
+// Configure marked for safe rendering
+marked.setOptions({
+  breaks: true,
+  gfm: true
+});
 
 interface MessageProps {
   message: MessageType;
@@ -35,9 +42,13 @@ const Message: Component<MessageProps> = (props) => {
           </div>
         </Show>
         <Show when={!props.message.error}>
-          <div class="answer-content">
-            <p>{props.message.answer}</p>
-          </div>
+          <Show when={props.message.fallbackUsed}>
+            <div class="drs-badge">
+              <span class="drs-icon">📡</span>
+              <span class="drs-text">Retrieved from FAA DRS</span>
+            </div>
+          </Show>
+          <div class="answer-content" innerHTML={marked.parse(props.message.answer || '') as string} />
           <SourceList sources={props.message.sources} count={props.message.sourceCount} />
           <ContextViewer context={props.message.context} isVisible={props.showContext} />
         </Show>

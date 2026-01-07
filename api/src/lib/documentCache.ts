@@ -80,6 +80,41 @@ export class DocumentCache {
   }
   
   /**
+   * Check if a key exists in cache (fast check without downloading)
+   * 
+   * @param key - Cache key (e.g., "drs/AC/AC_23-8C.json")
+   * @returns true if exists and not expired, false otherwise
+   */
+  async exists(key: string): Promise<boolean> {
+    if (!this.enabled) return false;
+    
+    try {
+      await this.initialize();
+      if (!this.containerClient) return false;
+      
+      const blobClient = this.containerClient.getBlobClient(key);
+      
+      const exists = await blobClient.exists();
+      if (!exists) return false;
+      
+      const props = await blobClient.getProperties();
+      
+      // Check TTL based on metadata
+      const cachedAtStr = props.metadata?.cachedat;
+      const cachedAt = cachedAtStr ? new Date(cachedAtStr) : props.lastModified || new Date();
+      const ttlHours = parseInt(props.metadata?.ttlhours || String(CACHE_CONFIG.defaultTTLHours));
+      
+      // Check if expired
+      const ageMs = Date.now() - cachedAt.getTime();
+      const ttlMs = ttlHours * 3600000;
+      
+      return ageMs <= ttlMs;
+    } catch {
+      return false;
+    }
+  }
+  
+  /**
    * Get cached document
    * 
    * @param key - Cache key (e.g., "cfr/14/23/2150.json")

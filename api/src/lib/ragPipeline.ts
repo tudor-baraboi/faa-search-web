@@ -21,6 +21,7 @@ const DRS_CONFIG = {
   maxDocTypes: parseInt(process.env.DRS_MAX_DOC_TYPES || '2'),
   maxResultsPerSearch: parseInt(process.env.DRS_MAX_RESULTS_PER_SEARCH || '1'),
   maxTotalDocuments: parseInt(process.env.DRS_MAX_TOTAL_DOCUMENTS || '4'),
+  maxFreshDownloads: parseInt(process.env.DRS_MAX_FRESH_DOWNLOADS || '2'), // Limit fresh PDF downloads
 };
 
 /**
@@ -348,7 +349,7 @@ Please answer based on the FAA regulations and guidance materials provided above
 
   /**
    * Fetch DRS documents based on classification
-   * Enhanced: Searches for documents related to CFR parts/sections
+   * Enhanced: Cache-first approach - prioritizes cached documents to minimize latency
    */
   private async fetchFromDRSByClassification(
     question: string,
@@ -360,11 +361,12 @@ Please answer based on the FAA regulations and guidance materials provided above
     
     const drsClient = new DRSClient();
     const documents: Document[] = [];
-    const fetchedUrls = new Set<string>(); // Deduplicate by download URL (same PDF can appear in multiple searches)
+    const fetchedUrls = new Set<string>(); // Deduplicate by download URL
+    let freshDownloadCount = 0; // Track fresh PDF downloads (slow operations)
     
-    // Helper to add document with deduplication and limit check
+    // Helper to add document with deduplication
     const addDocument = (doc: { title: string; chunk: string; score: number }, downloadUrl: string): boolean => {
-      if (fetchedUrls.has(downloadUrl) || documents.length >= DRS_CONFIG.maxTotalDocuments) {
+      if (fetchedUrls.has(downloadUrl)) {
         return false;
       }
       fetchedUrls.add(downloadUrl);
@@ -393,32 +395,32 @@ Please answer based on the FAA regulations and guidance materials provided above
       }
     }
     
-    // 2. NEW: Search for documents using CFR part keywords and topic keywords
+    // 2. Search for documents using CFR part keywords and topic keywords
     const drsKeywords = buildDRSKeywords(classification);
-    // Default document types - AD is not a valid DRS endpoint, so exclude it
     const allDocTypes = ['AC', 'TSO', 'Order'] as const;
     const docTypes = (classification.documentTypes && classification.documentTypes.length > 0)
       ? classification.documentTypes.filter(t => t !== 'AD').slice(0, DRS_CONFIG.maxDocTypes)
       : allDocTypes.slice(0, DRS_CONFIG.maxDocTypes);
     
-    // Extract CFR parts for targeted AC search (AC 23-xx for Part 23, etc.)
     const cfrParts = classification.cfrParts || [];
     
     if (drsKeywords.length > 0 && documents.length < DRS_CONFIG.maxTotalDocuments) {
       console.log(`📚 CFR→DRS keyword search: keywords=[${drsKeywords.join(', ')}] types=[${docTypes.join(', ')}] parts=[${cfrParts.join(', ')}]`);
       
+      // Collect all candidate documents from searches
+      interface Candidate {
+        result: import('./drsClient').DRSDocument;
+        docType: string;
+        score: number;
+      }
+      const candidates: Candidate[] = [];
+      
       for (const docType of docTypes) {
-        if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
-        
         try {
-          // For ACs, search Part-specific documents first (AC 23-xx, AC 25-xx, etc.)
-          // These are most relevant as they're written specifically for that Part
+          // For ACs, search Part-specific documents first
           if (docType === 'AC' && cfrParts.length > 0) {
             console.log(`  📌 Starting Part-specific AC search for parts: [${cfrParts.join(', ')}]`);
             for (const part of cfrParts.slice(0, 2)) {
-              if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
-              
-              // Search for Part-specific ACs with topic keywords
               const topicKeywords = (classification.topics || []).slice(0, 3);
               const searchKeywords = topicKeywords.length > 0 ? topicKeywords : drsKeywords;
               console.log(`  🔎 Part ${part}: searching with keywords=[${searchKeywords.join(', ')}]`);
@@ -429,67 +431,92 @@ Please answer based on the FAA regulations and guidance materials provided above
                 { 
                   statusFilter: ['Current'], 
                   maxResults: DRS_CONFIG.maxResultsPerSearch * 5,
-                  docNumberPrefix: `AC ${part}-`  // e.g., "AC 23-" for Part 23 ACs
+                  docNumberPrefix: `AC ${part}-`
                 }
               );
               
               console.log(`  📊 Part ${part}: found ${searchResults.length} matching ACs`);
               
               for (const result of searchResults) {
-                if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
-                if (!result?.mainDocumentDownloadURL || !result?.documentNumber) continue;
-                if (fetchedUrls.has(result.mainDocumentDownloadURL)) {
-                  console.log(`  ⏭️ Skipping duplicate: ${result.documentNumber}`);
-                  continue;
-                }
-                
-                const fetched = await drsClient.fetchDocumentDirect(result, docType);
-                
-                if (fetched) {
-                  const maxChars = 30000;
-                  addDocument({
-                    title: fetched.doc.title,
-                    chunk: fetched.text.substring(0, maxChars),
-                    score: 0.9  // Higher score for Part-specific ACs
-                  }, result.mainDocumentDownloadURL);
-                  console.log(`  ✅ Found Part ${part} AC: ${fetched.doc.title}`);
+                if (result?.mainDocumentDownloadURL && result?.documentNumber) {
+                  candidates.push({ result, docType, score: 0.9 });
                 }
               }
             }
           }
           
-          // Fallback: general keyword search if no Part-specific ACs found
-          if (documents.length < DRS_CONFIG.maxTotalDocuments) {
-            const searchResults = await drsClient.searchDocumentsFiltered(
-              drsKeywords,
-              docType,
-              { statusFilter: ['Current'], maxResults: DRS_CONFIG.maxResultsPerSearch * 3 }
-            );
-            
-            for (const result of searchResults) {
-              if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
-              if (!result?.mainDocumentDownloadURL || !result?.documentNumber) continue;
-              if (fetchedUrls.has(result.mainDocumentDownloadURL)) {
-                console.log(`  ⏭️ Skipping duplicate: ${result.documentNumber}`);
-                continue;
-              }
-              
-              // Use direct fetch - we already have the metadata, no need to search again
-              const fetched = await drsClient.fetchDocumentDirect(result, docType);
-              
-              if (fetched) {
-                const maxChars = 30000;
-                addDocument({
-                  title: fetched.doc.title,
-                  chunk: fetched.text.substring(0, maxChars),
-                  score: 0.85
-                }, result.mainDocumentDownloadURL);
-                console.log(`  ✅ Found: ${fetched.doc.title}`);
-              }
+          // General keyword search
+          const searchResults = await drsClient.searchDocumentsFiltered(
+            drsKeywords,
+            docType,
+            { statusFilter: ['Current'], maxResults: DRS_CONFIG.maxResultsPerSearch * 3 }
+          );
+          
+          for (const result of searchResults) {
+            if (result?.mainDocumentDownloadURL && result?.documentNumber) {
+              candidates.push({ result, docType, score: 0.85 });
             }
           }
         } catch (error) {
           console.warn(`  ⚠️ DRS filtered search for ${docType} failed:`, error);
+        }
+      }
+      
+      // Deduplicate candidates by URL
+      const uniqueCandidates = candidates.filter((c, i, arr) => 
+        arr.findIndex(x => x.result.mainDocumentDownloadURL === c.result.mainDocumentDownloadURL) === i &&
+        !fetchedUrls.has(c.result.mainDocumentDownloadURL!)
+      );
+      
+      console.log(`  📋 Found ${uniqueCandidates.length} unique candidates, checking cache...`);
+      
+      // CACHE-FIRST: Check which candidates are cached (fast parallel check)
+      const cacheChecks = await Promise.all(
+        uniqueCandidates.map(async c => ({
+          ...c,
+          isCached: await drsClient.isCached(c.docType, c.result.documentNumber)
+        }))
+      );
+      
+      const cachedCandidates = cacheChecks.filter(c => c.isCached);
+      const uncachedCandidates = cacheChecks.filter(c => !c.isCached);
+      
+      console.log(`  📦 Cache status: ${cachedCandidates.length} cached, ${uncachedCandidates.length} need download`);
+      
+      // Phase 1: Fetch ALL cached documents (fast, no limit)
+      for (const c of cachedCandidates) {
+        if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+        
+        const fetched = await drsClient.fetchDocumentDirect(c.result, c.docType);
+        if (fetched) {
+          const maxChars = 30000;
+          addDocument({
+            title: fetched.doc.title,
+            chunk: fetched.text.substring(0, maxChars),
+            score: c.score
+          }, c.result.mainDocumentDownloadURL!);
+          console.log(`  📦 Cache hit: ${fetched.doc.title}`);
+        }
+      }
+      
+      // Phase 2: Download up to maxFreshDownloads additional uncached documents
+      for (const c of uncachedCandidates) {
+        if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+        if (freshDownloadCount >= DRS_CONFIG.maxFreshDownloads) {
+          console.log(`  ⏸️ Reached fresh download limit (${DRS_CONFIG.maxFreshDownloads}), skipping remaining`);
+          break;
+        }
+        
+        const fetched = await drsClient.fetchDocumentDirect(c.result, c.docType);
+        if (fetched) {
+          freshDownloadCount++;
+          const maxChars = 30000;
+          addDocument({
+            title: fetched.doc.title,
+            chunk: fetched.text.substring(0, maxChars),
+            score: c.score
+          }, c.result.mainDocumentDownloadURL!);
+          console.log(`  ⬇️ Downloaded: ${fetched.doc.title} (${freshDownloadCount}/${DRS_CONFIG.maxFreshDownloads})`);
         }
       }
     }
@@ -500,6 +527,7 @@ Please answer based on the FAA regulations and guidance materials provided above
       
       for (const docType of classification.documentTypes.slice(0, DRS_CONFIG.maxDocTypes)) {
         if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+        if (freshDownloadCount >= DRS_CONFIG.maxFreshDownloads) break;
         
         try {
           const searchResults = await drsClient.searchDocuments(question, docType);
@@ -524,7 +552,7 @@ Please answer based on the FAA regulations and guidance materials provided above
       }
     }
     
-    console.log(`📚 DRS fetch complete: ${documents.length} documents (limit: ${DRS_CONFIG.maxTotalDocuments})`);
+    console.log(`📚 DRS fetch complete: ${documents.length} docs, ${freshDownloadCount} fresh downloads`);
     return documents;
   }
 

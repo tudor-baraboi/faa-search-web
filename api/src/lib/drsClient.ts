@@ -78,6 +78,18 @@ export class DRSClient {
   }
 
   /**
+   * Check if a document is cached (fast existence check)
+   * 
+   * @param docType Document type (AC, TSO, Order)
+   * @param docNumber Document number
+   * @returns true if cached and not expired
+   */
+  async isCached(docType: string, docNumber: string): Promise<boolean> {
+    const cacheKey = DocumentCache.drsKey(docType, docNumber);
+    return this.cache.exists(cacheKey);
+  }
+
+  /**
    * Search for documents in DRS using filtered POST endpoint with keyword search
    * Supports multiple keywords and status filtering for better relevance
    * 

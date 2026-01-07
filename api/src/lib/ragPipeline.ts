@@ -359,14 +359,14 @@ Please answer based on the FAA regulations and guidance materials provided above
     
     const drsClient = new DRSClient();
     const documents: Document[] = [];
-    const fetchedDocNumbers = new Set<string>(); // Deduplication
+    const fetchedUrls = new Set<string>(); // Deduplicate by download URL (same PDF can appear in multiple searches)
     
     // Helper to add document with deduplication and limit check
-    const addDocument = (doc: { title: string; chunk: string; score: number }, docNumber: string): boolean => {
-      if (fetchedDocNumbers.has(docNumber) || documents.length >= DRS_CONFIG.maxTotalDocuments) {
+    const addDocument = (doc: { title: string; chunk: string; score: number }, downloadUrl: string): boolean => {
+      if (fetchedUrls.has(downloadUrl) || documents.length >= DRS_CONFIG.maxTotalDocuments) {
         return false;
       }
-      fetchedDocNumbers.add(docNumber);
+      fetchedUrls.add(downloadUrl);
       documents.push(doc);
       return true;
     };
@@ -378,7 +378,7 @@ Please answer based on the FAA regulations and guidance materials provided above
       if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
       
       const result = await drsClient.fetchDocumentWithCache(ref.docNumber, ref.docType);
-      if (result) {
+      if (result && result.doc.mainDocumentDownloadURL) {
         const maxChars = 50000;
         const truncatedText = result.text.length > maxChars
           ? result.text.substring(0, maxChars) + "\n\n[Document truncated due to length...]"
@@ -388,16 +388,16 @@ Please answer based on the FAA regulations and guidance materials provided above
           title: result.doc.title,
           chunk: truncatedText,
           score: 1.0
-        }, ref.docNumber);
+        }, result.doc.mainDocumentDownloadURL);
       }
     }
     
     // 2. NEW: Search for documents related to CFR parts/sections from classifier
     const cfrQueries = buildCFRSearchQueries(classification);
-    // Default to all document types if classifier didn't specify - let maxDocTypes limit control scope
-    const allDocTypes = ['AC', 'AD', 'TSO', 'Order'] as const;
+    // Default document types - AD is not a valid DRS endpoint, so exclude it
+    const allDocTypes = ['AC', 'TSO', 'Order'] as const;
     const docTypes = (classification.documentTypes && classification.documentTypes.length > 0)
-      ? classification.documentTypes.slice(0, DRS_CONFIG.maxDocTypes)
+      ? classification.documentTypes.filter(t => t !== 'AD').slice(0, DRS_CONFIG.maxDocTypes)
       : allDocTypes.slice(0, DRS_CONFIG.maxDocTypes);
     
     if (cfrQueries.length > 0 && documents.length < DRS_CONFIG.maxTotalDocuments) {
@@ -417,7 +417,11 @@ Please answer based on the FAA regulations and guidance materials provided above
             for (const result of topResults) {
               if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
               if (!result?.mainDocumentDownloadURL || !result?.documentNumber) continue;
-              if (fetchedDocNumbers.has(result.documentNumber)) continue;
+              // Deduplicate by download URL - same PDF can appear in multiple searches
+              if (fetchedUrls.has(result.mainDocumentDownloadURL)) {
+                console.log(`  ⏭️ Skipping duplicate: ${result.documentNumber}`);
+                continue;
+              }
               
               const fetched = await drsClient.fetchDocumentWithCache(
                 result.documentNumber,
@@ -430,7 +434,7 @@ Please answer based on the FAA regulations and guidance materials provided above
                   title: fetched.doc.title,
                   chunk: fetched.text.substring(0, maxChars),
                   score: 0.85
-                }, result.documentNumber);
+                }, result.mainDocumentDownloadURL);
                 console.log(`  ✅ Found: ${fetched.doc.title}`);
               }
             }

@@ -759,7 +759,118 @@ Query: "stall speed compliance"
    az storage container create --name document-cache --account-name <your-storage>
    ```
 
-2. **No new secrets needed** — uses existing `AzureWebJobsStorage` connection string
+2. **No new secrets needed** — uses `BLOB_STORAGE_CONNECTION_STRING` (or `AzureWebJobsStorage` locally)
+
+### CFR→Document Mapping Enhancement
+
+The Query Classifier identifies CFR parts/sections from user queries. This enhancement automatically searches DRS for related documents (ACs, ADs, TSOs, Orders) based on those CFR references, ensuring Claude has both the regulatory requirements AND compliance guidance in context.
+
+#### Why This Matters
+
+| Source | Content Type | Example |
+|--------|-------------|---------|
+| eCFR | Legal requirement (MUST) | "Stall speed may not exceed 61 knots..." |
+| AC | Acceptable means of compliance (MAY) | "Flight test procedures for demonstrating..." |
+| AD | Mandatory safety action | "Replace fuel line fitting within 500 hours..." |
+| TSO | Equipment standard | "Minimum performance standard for..." |
+
+Without this mapping, users get only the CFR text. With it, they get the complete picture: requirement + how to comply.
+
+#### Configuration (Environment Variables)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DRS_MAX_CFR_QUERIES` | 3 | Max CFR-based search queries (sections prioritized over parts) |
+| `DRS_MAX_DOC_TYPES` | 2 | Max document types to search from classifier output |
+| `DRS_MAX_RESULTS_PER_SEARCH` | 1 | Top N results fetched per DRS search |
+| `DRS_MAX_TOTAL_DOCUMENTS` | 4 | Hard cap on total documents fetched per request |
+
+#### Flow
+
+```
+User: "What are the stall speed requirements for Part 23?"
+                    │
+                    ▼
+┌───────────────────────────────────────────────────────────────────┐
+│ Query Classifier                                                  │
+│   cfrParts: [23]                                                  │
+│   cfrSections: ["23.2150"]                                        │
+│   documentTypes: ["AC", "AD"]                                     │
+└───────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────────────────────────────────┐
+│ Build CFR Search Queries                                          │
+│   ["23.2150", "Part 23"]  (max DRS_MAX_CFR_QUERIES)              │
+└───────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────────────────────────────────┐
+│ Parallel Fetch                                                    │
+│                                                                   │
+│   eCFR:                                                          │
+│     └── § 23.2150 (stall speed text)                             │
+│                                                                   │
+│   DRS (for each query × each docType):                           │
+│     ├── "23.2150" in AC → AC 23.2150-1                           │
+│     ├── "23.2150" in AD → (none found)                           │
+│     ├── "Part 23" in AC → AC 23-8C                               │
+│     └── "Part 23" in AD → (none found)                           │
+│                                                                   │
+│   Deduplicate + cap at DRS_MAX_TOTAL_DOCUMENTS                   │
+└───────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────────────────────────────────┐
+│ Claude Synthesis                                                  │
+│   Context: eCFR § 23.2150 + AC 23.2150-1 + AC 23-8C              │
+│   → Complete answer with requirement + compliance methods        │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+#### Implementation Details
+
+```typescript
+// api/src/lib/ragPipeline.ts
+
+// Configurable limits
+const DRS_CONFIG = {
+  maxCfrQueries: parseInt(process.env.DRS_MAX_CFR_QUERIES || '3'),
+  maxDocTypes: parseInt(process.env.DRS_MAX_DOC_TYPES || '2'),
+  maxResultsPerSearch: parseInt(process.env.DRS_MAX_RESULTS_PER_SEARCH || '1'),
+  maxTotalDocuments: parseInt(process.env.DRS_MAX_TOTAL_DOCUMENTS || '4'),
+};
+
+// Build search queries from CFR classification (sections first, then parts)
+function buildCFRSearchQueries(classification: QueryClassification): string[] {
+  const queries: string[] = [];
+  
+  // Sections are most specific (e.g., "23.2150")
+  for (const section of classification.cfrSections) {
+    if (queries.length >= DRS_CONFIG.maxCfrQueries) break;
+    queries.push(section);
+  }
+  
+  // Parts are broader (e.g., "Part 23")
+  for (const part of classification.cfrParts) {
+    if (queries.length >= DRS_CONFIG.maxCfrQueries) break;
+    queries.push(`Part ${part}`);
+  }
+  
+  return queries;
+}
+```
+
+#### Rate Limiting Analysis
+
+| Scenario | DRS Searches | Document Downloads |
+|----------|--------------|-------------------|
+| Simple query (1 section, 1 type) | 1 | 1 |
+| Typical query (2 sections, 2 types) | 4 | 2-4 |
+| Complex query (3 queries, 2 types) | 6 | 4 (capped) |
+| Worst case with defaults | 6 | 4 (capped) |
+
+**Latency impact:** +200-400ms for searches (parallel), +1-3s for uncached downloads (cached: ~50ms)
 
 ### Files to Create/Modify
 

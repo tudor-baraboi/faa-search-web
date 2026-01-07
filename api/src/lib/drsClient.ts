@@ -92,64 +92,85 @@ export class DRSClient {
     options: { statusFilter?: string[]; maxResults?: number; docNumberPrefix?: string } = {}
   ): Promise<DRSDocument[]> {
     const { statusFilter = ['Current'], maxResults = 10, docNumberPrefix } = options;
+    const maxRetries = 2;
     
-    try {
-      const prefixInfo = docNumberPrefix ? ` prefix=${docNumberPrefix}` : '';
-      console.log(`🔍 DRS filtered search: keywords=[${keywords.join(', ')}] type=${docType} status=${statusFilter.join(',')}${prefixInfo}`);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const prefixInfo = docNumberPrefix ? ` prefix=${docNumberPrefix}` : '';
+        const retryInfo = attempt > 1 ? ` (retry ${attempt}/${maxRetries})` : '';
+        console.log(`🔍 DRS filtered search: keywords=[${keywords.join(', ')}] type=${docType} status=${statusFilter.join(',')}${prefixInfo}${retryInfo}`);
 
-      const url = `${this.baseURL}/data-pull/${docType}/filtered`;
+        const url = `${this.baseURL}/data-pull/${docType}/filtered`;
 
-      // Build document filters (max 5 filters, max 10 values per filter)
-      const documentFilters: Record<string, string[]> = {
-        'drs:status': statusFilter,
-        'Keyword': keywords.slice(0, 10) // Max 10 keyword values
-      };
+        // Build document filters (max 5 filters, max 10 values per filter)
+        const documentFilters: Record<string, string[]> = {
+          'drs:status': statusFilter,
+          'Keyword': keywords.slice(0, 10) // Max 10 keyword values
+        };
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'x-api-key': this.apiKey,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          offset: 0,
-          documentFilters
-        })
-      });
+        // Use AbortController for timeout (15 seconds)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('DRS API error response:', errorText);
-        throw new Error(`DRS API error: ${response.status} ${response.statusText}`);
-      }
-
-      const data = await response.json();
-
-      if (!data?.documents || !Array.isArray(data.documents)) {
-        console.warn('⚠️ DRS response has no documents array');
-        return [];
-      }
-
-      console.log(`✅ DRS found ${data.documents.length} documents (total: ${data.summary?.totalItems || 'unknown'})`);
-
-      // Filter by document number prefix if provided (e.g., "AC 23" for Part 23 ACs)
-      let filteredDocs = data.documents;
-      if (docNumberPrefix) {
-        const prefixUpper = docNumberPrefix.toUpperCase();
-        filteredDocs = data.documents.filter((doc: DRSDocumentRaw) => {
-          const docNum = (doc['drs:documentNumber'] || '').toUpperCase();
-          return docNum.startsWith(prefixUpper);
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'x-api-key': this.apiKey,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            offset: 0,
+            documentFilters
+          }),
+          signal: controller.signal
         });
-        console.log(`  📌 Filtered to ${filteredDocs.length} docs matching prefix "${docNumberPrefix}"`);
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('DRS API error response:', errorText);
+          throw new Error(`DRS API error: ${response.status} ${response.statusText}`);
+        }
+
+        const data = await response.json();
+
+        if (!data?.documents || !Array.isArray(data.documents)) {
+          console.warn('⚠️ DRS response has no documents array');
+          return [];
+        }
+
+        console.log(`✅ DRS found ${data.documents.length} documents (total: ${data.summary?.totalItems || 'unknown'})`);
+
+        // Filter by document number prefix if provided (e.g., "AC 23" for Part 23 ACs)
+        let filteredDocs = data.documents;
+        if (docNumberPrefix) {
+          const prefixUpper = docNumberPrefix.toUpperCase();
+          filteredDocs = data.documents.filter((doc: DRSDocumentRaw) => {
+            const docNum = (doc['drs:documentNumber'] || '').toUpperCase();
+            return docNum.startsWith(prefixUpper);
+          });
+          console.log(`  📌 Filtered to ${filteredDocs.length} docs matching prefix "${docNumberPrefix}"`);
+        }
+
+        // Normalize and limit results
+        return filteredDocs.slice(0, maxResults).map(normalizeDRSDocument);
+
+      } catch (error) {
+        const isTimeout = error instanceof Error && 
+          (error.name === 'AbortError' || error.message.includes('timeout') || error.message.includes('TIMEOUT'));
+        
+        if (isTimeout && attempt < maxRetries) {
+          console.warn(`⏱️ DRS search timeout, retrying (${attempt}/${maxRetries})...`);
+          continue;
+        }
+        
+        console.error('❌ DRS filtered search error:', error);
+        throw new Error(`DRS search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
-
-      // Normalize and limit results
-      return filteredDocs.slice(0, maxResults).map(normalizeDRSDocument);
-
-    } catch (error) {
-      console.error('❌ DRS filtered search error:', error);
-      throw new Error(`DRS search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+    
+    return []; // Should not reach here
   }
 
   /**

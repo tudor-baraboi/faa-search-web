@@ -211,8 +211,7 @@ Please answer based on the FAA regulations and guidance materials provided above
         answer: `I couldn't find ${docType} ${docNumber} in the FAA DRS system. Please verify the document number and try again.`,
         sources: [],
         sourceCount: 0,
-        context: "",
-        fallbackUsed: true
+        context: ""
       };
     }
 
@@ -223,7 +222,6 @@ Please answer based on the FAA regulations and guidance materials provided above
       sources: [result.doc.title],
       sourceCount: 1,
       context,
-      fallbackUsed: true,
       drsSources: [{
         docType,
         docNumber,

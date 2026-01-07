@@ -48,8 +48,7 @@ export async function ask(request: HttpRequest, context: InvocationContext): Pro
       sources: result.sources,
       sourceCount: result.sourceCount,
       context: result.context,
-      error: result.error,
-      fallbackUsed: result.fallbackUsed
+      error: result.error
     };
 
     return {

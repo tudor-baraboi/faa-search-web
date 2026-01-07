@@ -8,6 +8,7 @@ export async function health(request: HttpRequest, context: InvocationContext): 
     hasAzureSearchKey: !!process.env.AZURE_SEARCH_KEY,
     hasAzureSearchIndex: !!process.env.AZURE_SEARCH_INDEX,
     hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+    hasDrsApiKey: !!process.env.DRS_API_KEY,
     azureSearchEndpoint: process.env.AZURE_SEARCH_ENDPOINT || "NOT_SET",
     azureSearchIndex: process.env.AZURE_SEARCH_INDEX || "NOT_SET",
     nodeVersion: process.version,

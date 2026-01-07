@@ -8,8 +8,5 @@
   "navigationFallback": {
     "rewrite": "/index.html",
     "exclude": ["/api/*"]
-  },
-  "platform": {
-    "apiRuntime": "node:20"
   }
 }

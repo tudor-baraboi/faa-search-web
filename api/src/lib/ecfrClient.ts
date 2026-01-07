@@ -36,6 +36,37 @@ export interface ECFRStructureNode {
  */
 export class ECFRClient {
   private baseURL = 'https://www.ecfr.gov/api';
+  private latestDateCache: Map<number, string> = new Map();
+  
+  /**
+   * Get the latest available date for a title from eCFR API
+   */
+  private async getLatestDate(title: number): Promise<string> {
+    // Check cache first
+    const cached = this.latestDateCache.get(title);
+    if (cached) {
+      return cached;
+    }
+    
+    try {
+      const response = await fetch(`${this.baseURL}/versioner/v1/titles.json`);
+      if (response.ok) {
+        const data = await response.json();
+        const titleInfo = data.titles?.find((t: any) => t.number === title);
+        if (titleInfo?.up_to_date_as_of) {
+          this.latestDateCache.set(title, titleInfo.up_to_date_as_of);
+          return titleInfo.up_to_date_as_of;
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️ Could not fetch eCFR titles, using fallback date');
+    }
+    
+    // Fallback: use a known safe date (first of current month)
+    const now = new Date();
+    const fallbackDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    return fallbackDate;
+  }
   
   /**
    * Fetch a specific CFR section
@@ -50,17 +81,15 @@ export class ECFRClient {
     console.log(`🌐 Fetching eCFR: Title ${title}, § ${fullSection}`);
     
     try {
-      // Get current date for the versioner API
-      const date = new Date().toISOString().split('T')[0];
+      // Get the latest available date for this title
+      const date = await this.getLatestDate(title);
       
-      // Fetch the full content for the section
-      // The eCFR API structure: /versioner/v1/full/{date}/title-{title}.xml
-      // We'll use the search endpoint to get specific section content
-      const url = `${this.baseURL}/versioner/v1/full/${date}/title-${title}.json?section=${fullSection}`;
+      // Fetch section content via XML endpoint with part and section params
+      const url = `${this.baseURL}/versioner/v1/full/${date}/title-${title}.xml?part=${part}&section=${fullSection}`;
       
       const response = await fetch(url, {
         headers: {
-          'Accept': 'application/json'
+          'Accept': 'application/xml'
         }
       });
       
@@ -69,13 +98,23 @@ export class ECFRClient {
           console.log(`⚠️  eCFR section not found: § ${fullSection}`);
           return null;
         }
-        throw new Error(`eCFR API error: ${response.status} ${response.statusText}`);
+        // Log more details for debugging
+        const errorText = await response.text().catch(() => 'No error body');
+        console.error(`❌ eCFR API error: ${response.status} ${response.statusText} - ${errorText.substring(0, 200)}`);
+        return null;
       }
       
-      const data = await response.json();
+      const xmlText = await response.text();
       
-      // Extract text content from the response
-      const content = this.extractTextContent(data);
+      // Check if it's an error response
+      if (xmlText.includes('<error>') || xmlText.includes('"error"')) {
+        console.log(`⚠️  eCFR returned error for § ${fullSection}`);
+        return null;
+      }
+      
+      // Extract text content from XML
+      const content = this.extractTextFromXML(xmlText);
+      const sectionTitle = this.extractSectionTitleFromXML(xmlText);
       
       if (!content) {
         console.log(`⚠️  No content found for § ${fullSection}`);
@@ -88,17 +127,47 @@ export class ECFRClient {
         title,
         part,
         section,
-        sectionTitle: this.extractSectionTitle(data) || `§ ${fullSection}`,
+        sectionTitle: sectionTitle || `§ ${fullSection}`,
         content,
         effectiveDate: date,
         source: 'ecfr',
-        url: `https://www.ecfr.gov/current/title-${title}/chapter-I/subchapter-C/part-${part}/section-${part}.${section}`
+        url: `https://www.ecfr.gov/current/title-${title}/part-${part}/section-${fullSection}`
       };
       
     } catch (error) {
       console.error(`❌ eCFR fetch error for § ${fullSection}:`, error);
       return null;
     }
+  }
+  
+  /**
+   * Extract text content from eCFR XML response
+   */
+  private extractTextFromXML(xml: string): string {
+    // Remove XML declaration and tags, keep text content
+    let text = xml
+      // Remove XML declaration
+      .replace(/<\?xml[^>]*\?>/g, '')
+      // Remove HEAD tag but keep content for section reference
+      .replace(/<HEAD>([^<]*)<\/HEAD>/g, '$1\n\n')
+      // Replace P tags with newlines
+      .replace(/<P>/g, '')
+      .replace(/<\/P>/g, '\n\n')
+      // Remove other XML tags
+      .replace(/<[^>]+>/g, '')
+      // Clean up whitespace
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    
+    return text;
+  }
+  
+  /**
+   * Extract section title from eCFR XML
+   */
+  private extractSectionTitleFromXML(xml: string): string | null {
+    const match = xml.match(/<HEAD>([^<]*)<\/HEAD>/);
+    return match ? match[1].trim() : null;
   }
   
   /**
@@ -145,7 +214,7 @@ export class ECFRClient {
     console.log(`📋 Fetching eCFR structure for Title ${title}, Part ${part}`);
     
     try {
-      const date = new Date().toISOString().split('T')[0];
+      const date = await this.getLatestDate(title);
       const url = `${this.baseURL}/versioner/v1/structure/${date}/title-${title}.json?part=${part}`;
       
       const response = await fetch(url, {

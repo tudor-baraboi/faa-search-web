@@ -115,7 +115,7 @@ export class AircraftCertificationRAG {
   async askQuestion(question: string): Promise<RAGResponse> {
     // Step 1: Check for quick document requests (e.g., "show me AC 23-8C")
     const quickDoc = quickClassifyDocumentRequest(question);
-    if (quickDoc) {
+    if (quickDoc.isDocRequest && quickDoc.docType && quickDoc.docNumber) {
       return this.handleDirectDocumentRequest(quickDoc.docType, quickDoc.docNumber);
     }
 
@@ -347,9 +347,10 @@ Please answer based on the FAA regulations and guidance materials provided above
       for (const docType of classification.documentTypes.slice(0, 2)) { // Limit to 2 types
         try {
           const searchResults = await drsClient.searchDocuments(question, docType);
-          if (searchResults.length > 0 && searchResults[0].mainDocumentDownloadURL) {
+          const topResult = searchResults[0];
+          if (topResult?.mainDocumentDownloadURL && topResult?.documentNumber) {
             const result = await drsClient.fetchDocumentWithCache(
-              searchResults[0].documentNumber, 
+              topResult.documentNumber, 
               docType
             );
             if (result) {

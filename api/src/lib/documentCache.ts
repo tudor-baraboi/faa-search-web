@@ -205,6 +205,9 @@ export class DocumentCache {
    * Generate cache key for DRS document
    */
   static drsKey(docType: string, docNumber: string): string {
+    if (!docNumber) {
+      throw new Error('docNumber is required for DRS cache key');
+    }
     const safeName = docNumber.replace(/[\s\/\\:*?"<>|]/g, '-');
     return `drs/${docType}/${safeName}.json`;
   }

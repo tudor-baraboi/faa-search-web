@@ -6,6 +6,9 @@ export type { QueryClassification } from './queryClassifier';
 // Re-export from ecfrClient
 export type { ECFRSection, ECFRSearchResult } from './ecfrClient';
 
+// Re-export from conversationStore
+export type { ConversationTurn, StoredConversation } from './conversationStore';
+
 export interface Document {
   chunk: string;
   title: string;
@@ -43,10 +46,16 @@ export interface RAGResponse {
   cfrSources?: CFRSource[];   // CFR sections used in response
   drsSources?: DRSSource[];   // DRS documents used in response
   classificationUsed?: boolean; // True if classifier was used
+  // Multi-turn conversation fields
+  sessionId?: string;         // Session ID for conversation continuity
+  needsClarification?: boolean; // True if the query was too vague/broad
+  clarifyingQuestion?: string;  // Follow-up question to ask the user
 }
 
 export interface AskQuestionRequest {
   question: string;
+  sessionId?: string;         // Optional session ID for conversation continuity
+  isClarifying?: boolean;     // True if this is a response to a clarifying question
 }
 
 export interface AskQuestionResponse extends RAGResponse {}

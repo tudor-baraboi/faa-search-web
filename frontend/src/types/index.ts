@@ -9,7 +9,8 @@ export interface Message {
   sourceCount: number;
   context: string;
   error?: string;
-  fallbackUsed?: boolean;  // True if DRS API was used instead of Azure Search
+  needsClarification?: boolean;  // True if the assistant is asking a clarifying question
+  clarifyingQuestion?: string;   // The clarifying question text
 }
 
 export interface ConversationState {
@@ -17,6 +18,7 @@ export interface ConversationState {
   isLoading: boolean;
   showContext: boolean;
   error: string | null;
+  sessionId: string | null;  // Session ID for multi-turn conversations
 }
 
 export interface RAGResponse {
@@ -25,9 +27,13 @@ export interface RAGResponse {
   sourceCount: number;
   context: string;
   error?: string;
-  fallbackUsed?: boolean;  // True if DRS API was used instead of Azure Search
+  sessionId?: string;            // Session ID returned from API
+  needsClarification?: boolean;  // True if the assistant is asking a clarifying question
+  clarifyingQuestion?: string;   // The clarifying question text
 }
 
 export interface AskQuestionRequest {
   question: string;
+  sessionId?: string;     // Session ID for conversation continuity
+  isClarifying?: boolean; // True if this is a response to a clarifying question
 }

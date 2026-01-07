@@ -3,9 +3,13 @@ import type { RAGResponse, AskQuestionRequest } from "../types";
 class FAASearchAPI {
   private baseURL = "/api";
 
-  async askQuestion(question: string): Promise<RAGResponse> {
+  async askQuestion(question: string, sessionId?: string, isClarifying?: boolean): Promise<RAGResponse> {
     try {
-      const request: AskQuestionRequest = { question };
+      const request: AskQuestionRequest = { 
+        question,
+        sessionId,
+        isClarifying
+      };
 
       const response = await fetch(`${this.baseURL}/ask`, {
         method: "POST",

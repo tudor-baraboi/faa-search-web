@@ -2186,6 +2186,131 @@ Database: Azure Database for PostgreSQL Flexible Server
 
 ---
 
+## Ideas Shelf
+
+Future enhancements and architectural directions to explore.
+
+### Agentic Mode (LangGraph)
+
+Move from linear flow to autonomous agent that decides what tools to call and loops until it has sufficient context.
+
+**Tools the agent could use:**
+- `cfr_lookup` - Fetch specific CFR sections from eCFR
+- `cfr_search` - Search CFR by topic/keywords
+- `drs_search` - Search FAA documents (ACs, ADs, TSOs)
+- `drs_fetch` - Download and extract specific document
+- `user_docs` - Search user-uploaded documents (specs, reports)
+- `precedent_search` - Find similar TC/STC approvals
+- `web_search` - General aviation information
+
+**Flow:**
+```
+User Question
+    ↓
+Agent thinks: "What do I need to answer this?"
+    ↓
+┌─────────────────────────────────────────┐
+│ Agent Loop                              │
+│                                         │
+│   Decide → Call Tool → Evaluate         │
+│      ↑                    │             │
+│      └────────────────────┘             │
+│           (repeat until sufficient)     │
+└─────────────────────────────────────────┘
+    ↓
+"I have enough context" → Generate Answer
+```
+
+**Example:**
+```
+User: "Compare Part 23 and Part 25 stall requirements and 
+       find the relevant ACs for compliance"
+
+Agent:
+  → cfr_lookup(part=23, section="2150") ✓
+  → cfr_lookup(part=25, section="103") ✓
+  → "Need compliance guidance..."
+  → drs_search(keywords=["stall", "Part 23"], type="AC") ✓
+  → drs_search(keywords=["stall", "Part 25"], type="AC") ✓
+  → "Found AC 23-8C and AC 25-7D, let me get details..."
+  → drs_fetch("AC 23-8C") ✓ (cached)
+  → drs_fetch("AC 25-7D") ✓ (cached)
+  → "Sufficient context" → Generate comparison
+```
+
+**When to implement:** When users need complex multi-part queries that require dynamic tool selection and iteration.
+
+**Tech:** LangGraph with tool-calling loop, ReAct pattern
+
+---
+
+### User Document Upload
+
+Allow users to upload their own documents (specs, test reports, drawings) and reference them in queries.
+
+**Use cases:**
+- "Does my wing design meet § 23.2240?"
+- "What additional tests do I need based on my test plan?"
+- "Find gaps in my compliance matrix"
+
+**Storage:** Azure Blob Storage per user/project
+
+---
+
+### Precedent Research
+
+Search historical TC/STC approvals to find how similar designs were certified.
+
+**Data source:** FAA type certificate data sheets, STC database
+
+**Use case:** "How have other Part 23 aircraft with composite wings been certified?"
+
+---
+
+### Proactive Monitoring
+
+Alert users when regulations or ACs they care about are updated.
+
+**Implementation:** 
+- User bookmarks CFR sections or ACs
+- Background job checks DRS/eCFR for changes
+- Email/notification on updates
+
+---
+
+### Compliance Matrix Generation
+
+Given a project scope, auto-generate a compliance matrix with applicable regulations.
+
+**Input:** Aircraft type, modifications, certification basis
+**Output:** Spreadsheet with sections, compliance methods, status
+
+---
+
+### Multi-Agent Collaboration
+
+Specialized agents that collaborate on complex questions:
+
+```
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│ Regulatory  │  │ Compliance  │  │ Precedent   │
+│ Agent       │  │ Agent       │  │ Agent       │
+│ "What the   │  │ "How to     │  │ "How others │
+│  CFR says"  │  │  comply"    │  │  did it"    │
+└──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+       │                │                │
+       └────────────────┼────────────────┘
+                        ↓
+               ┌─────────────────┐
+               │  Synthesizer    │
+               │  Agent          │
+               └─────────────────┘
+                        ↓
+                 Final Answer
+```
+
+---
+
 ## Contact & Resources
 
 **Project Documentation:**
@@ -2196,7 +2321,7 @@ Database: Azure Database for PostgreSQL Flexible Server
 **External Resources:**
 - LangGraph: https://langchain-ai.github.io/langgraph/
 - FAA DRS: https://drs.faa.gov
-- Azure AI Search: https://azure.microsoft.com/en-us/products/ai-services/ai-search
+- eCFR API: https://www.ecfr.gov/developers/documentation/api/v1
 
 ---
 

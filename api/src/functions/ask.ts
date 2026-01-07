@@ -1,6 +1,7 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { AircraftCertificationRAG } from "../lib/ragPipeline";
 import { AskQuestionRequest, AskQuestionResponse } from "../lib/types";
+import { getConversationStore, ConversationTurn } from "../lib/conversationStore";
 
 export async function ask(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
   context.log(`HTTP function processed request for url "${request.url}"`);
@@ -38,9 +39,56 @@ export async function ask(request: HttpRequest, context: InvocationContext): Pro
       };
     }
 
+    const question = requestData.question.trim();
+    const conversationStore = getConversationStore();
+    
+    // Get or create session
+    let sessionId = requestData.sessionId;
+    if (!sessionId) {
+      sessionId = conversationStore.generateSessionId();
+      context.log(`New session created: ${sessionId}`);
+    }
+    
+    // Load existing conversation if any
+    const conversation = await conversationStore.get(sessionId);
+    
+    // Add user question to conversation
+    const userTurn: ConversationTurn = {
+      role: 'user',
+      content: question,
+      timestamp: Date.now()
+    };
+    
     // Create RAG instance and process question
     const rag = new AircraftCertificationRAG();
-    const result = await rag.askQuestion(requestData.question.trim());
+    const result = await rag.askQuestion(question, {
+      sessionId,
+      isClarifying: requestData.isClarifying || false,
+      conversation
+    });
+
+    // Add assistant response to conversation
+    const assistantTurn: ConversationTurn = {
+      role: 'assistant',
+      content: result.answer,
+      timestamp: Date.now(),
+      sources: result.sources,
+      isClarifying: result.needsClarification || false
+    };
+    
+    // Save conversation turns
+    if (conversation) {
+      conversation.turns.push(userTurn, assistantTurn);
+      await conversationStore.save(conversation);
+    } else {
+      // Create new conversation with both turns
+      await conversationStore.save({
+        sessionId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        turns: [userTurn, assistantTurn]
+      });
+    }
 
     // Return successful response
     const response: AskQuestionResponse = {
@@ -48,7 +96,10 @@ export async function ask(request: HttpRequest, context: InvocationContext): Pro
       sources: result.sources,
       sourceCount: result.sourceCount,
       context: result.context,
-      error: result.error
+      error: result.error,
+      sessionId,
+      needsClarification: result.needsClarification,
+      clarifyingQuestion: result.clarifyingQuestion
     };
 
     return {

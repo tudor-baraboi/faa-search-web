@@ -16,10 +16,12 @@
     "@azure/functions": "^4.0.0",
     "@azure/storage-blob": "^12.29.1",
     "crypto-browserify": "^3.12.1",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
+    "@types/uuid": "^10.0.0",
     "azure-functions-core-tools": "^4.x",
     "typescript": "^5.9.3"
   }

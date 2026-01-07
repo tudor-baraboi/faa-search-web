@@ -10,6 +10,7 @@ interface StoredData {
     showContext: boolean;
   };
   messages: Message[];
+  sessionId?: string | null;
 }
 
 export class ConversationStorage {
@@ -23,7 +24,8 @@ export class ConversationStorage {
         messages: data.messages || [],
         isLoading: false,
         showContext: data.settings?.showContext || false,
-        error: null
+        error: null,
+        sessionId: data.sessionId || null
       };
     } catch (error) {
       console.error("Error loading conversation from localStorage:", error);
@@ -42,7 +44,8 @@ export class ConversationStorage {
         settings: {
           showContext: state.showContext
         },
-        messages
+        messages,
+        sessionId: state.sessionId
       };
 
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));

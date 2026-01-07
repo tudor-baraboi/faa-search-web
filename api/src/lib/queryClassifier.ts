@@ -27,6 +27,11 @@ export interface QueryClassification {
   // Confidence and reasoning
   confidence: number;
   reasoning: string;
+  
+  // Clarity assessment (for multi-turn conversations)
+  needsClarification: boolean;
+  clarificationReason?: string;
+  suggestedQuestion?: string;
 }
 
 /**
@@ -39,7 +44,8 @@ const DEFAULT_CLASSIFICATION: QueryClassification = {
   cfrSections: [],
   documentTypes: ['AC'],
   confidence: 0.3,
-  reasoning: 'Default classification - unable to determine specific routing'
+  reasoning: 'Default classification - unable to determine specific routing',
+  needsClarification: false
 };
 
 /**
@@ -74,6 +80,13 @@ const CLASSIFIER_SYSTEM_PROMPT = `You are an FAA regulatory classification exper
    - AD: Airworthiness Directives (mandatory actions)
    - TSO: Technical Standard Orders
    - Order: FAA Orders
+
+5. Query clarity assessment:
+   - needsClarification: true if the query is too vague or broad to answer effectively
+   - Vague queries: "tell me about regulations", "what are the rules", "help me with certification"
+   - Broad queries: "Part 23 requirements" (which aspect?), "aircraft maintenance" (what type?)
+   - Clear queries: "stall speed requirements for Part 23", "AC 43.13-1B content"
+   - If unclear, suggest a clarifying question to ask the user
 
 Common section mappings:
 - Stall speed → § 23.2150 or § 25.103
@@ -120,7 +133,10 @@ Respond with JSON only:
   "documentTypes": ["AC"|"AD"|"TSO"|"Order"],
   "specificDocument": "if explicitly mentioned, e.g. AC 43.13-1B",
   "confidence": 0.0-1.0,
-  "reasoning": "brief explanation"
+  "reasoning": "brief explanation",
+  "needsClarification": true|false,
+  "clarificationReason": "why clarification is needed (if needsClarification is true)",
+  "suggestedQuestion": "what to ask the user (if needsClarification is true)"
 }`
       }]
     });
@@ -166,7 +182,10 @@ function parseClassifierResponse(text: string): QueryClassification {
       documentTypes: validateDocumentTypes(parsed.documentTypes),
       specificDocument: parsed.specificDocument || undefined,
       confidence: typeof parsed.confidence === 'number' ? Math.min(1, Math.max(0, parsed.confidence)) : 0.5,
-      reasoning: parsed.reasoning || 'No reasoning provided'
+      reasoning: parsed.reasoning || 'No reasoning provided',
+      needsClarification: Boolean(parsed.needsClarification),
+      clarificationReason: parsed.clarificationReason || undefined,
+      suggestedQuestion: parsed.suggestedQuestion || undefined
     };
   } catch (error) {
     console.error('❌ Failed to parse classifier response:', error);

@@ -42,10 +42,10 @@ const Message: Component<MessageProps> = (props) => {
           </div>
         </Show>
         <Show when={!props.message.error}>
-          <Show when={props.message.fallbackUsed}>
-            <div class="drs-badge">
-              <span class="drs-icon">📡</span>
-              <span class="drs-text">Retrieved from FAA DRS</span>
+          <Show when={props.message.needsClarification}>
+            <div class="clarification-badge">
+              <span class="clarification-icon">🤔</span>
+              <span class="clarification-text">Needs more information</span>
             </div>
           </Show>
           <div class="answer-content" innerHTML={marked.parse(props.message.answer || '') as string} />

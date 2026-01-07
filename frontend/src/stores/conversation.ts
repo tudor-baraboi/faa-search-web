@@ -8,7 +8,8 @@ const initialState: ConversationState = storage.load() || {
   messages: [],
   isLoading: false,
   showContext: false,
-  error: null
+  error: null,
+  sessionId: null
 };
 
 export const [conversationState, setConversationState] = createStore<ConversationState>(initialState);
@@ -16,6 +17,13 @@ export const [conversationState, setConversationState] = createStore<Conversatio
 // Helper to generate unique IDs
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Check if the last message was a clarifying question
+function isLastMessageClarifying(): boolean {
+  const messages = conversationState.messages;
+  if (messages.length === 0) return false;
+  return messages[messages.length - 1].needsClarification === true;
 }
 
 // Actions
@@ -28,8 +36,20 @@ export const conversationActions = {
     setConversationState("error", null);
 
     try {
-      // Call API
-      const response = await api.askQuestion(question);
+      // Determine if this is a response to a clarifying question
+      const isClarifying = isLastMessageClarifying();
+      
+      // Call API with session ID for conversation continuity
+      const response = await api.askQuestion(
+        question,
+        conversationState.sessionId || undefined,
+        isClarifying
+      );
+
+      // Update session ID if returned (new session or existing)
+      if (response.sessionId) {
+        setConversationState("sessionId", response.sessionId);
+      }
 
       // Create message from response
       const message: Message = {
@@ -41,7 +61,8 @@ export const conversationActions = {
         sourceCount: response.sourceCount,
         context: response.context,
         error: response.error,
-        fallbackUsed: response.fallbackUsed
+        needsClarification: response.needsClarification,
+        clarifyingQuestion: response.clarifyingQuestion
       };
 
       // Add message to store
@@ -66,11 +87,19 @@ export const conversationActions = {
 
   clearMessages() {
     setConversationState("messages", []);
+    setConversationState("sessionId", null);  // Reset session on clear
     storage.clear();
   },
 
   setError(error: string | null) {
     setConversationState("error", error);
+  },
+
+  // Start a new conversation (clears session but keeps history visible)
+  newConversation() {
+    setConversationState("sessionId", null);
+    // Optionally could add a separator in messages or just clear them
+    // For now, just reset the session ID
   },
 
   exportConversation(format: "json" | "text") {

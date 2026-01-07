@@ -442,6 +442,29 @@ body {
   letter-spacing: 0.02em;
 }
 
+/* Clarification Badge - indicates assistant needs more information */
+.clarification-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background-color: #FFF8E1;
+  color: #F57C00;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-bottom: 1rem;
+  border: 1px solid #FFE082;
+}
+
+.clarification-badge .clarification-icon {
+  font-size: 1rem;
+}
+
+.clarification-badge .clarification-text {
+  letter-spacing: 0.02em;
+}
+
 /* Mobile Responsive */
 @media (max-width: 768px) {
   .app-header {

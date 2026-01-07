@@ -2,13 +2,14 @@
 import "./polyfills";
 
 import Anthropic from "@anthropic-ai/sdk";
-import { Document, RAGResponse, CFRSource, DRSSource } from "./types";
+import { Document, RAGResponse, CFRSource, DRSSource, StoredConversation } from "./types";
 import { createAnthropicClient } from "./anthropic";
 import { DRSClient } from "./drsClient";
 import { evaluateSearchResults, extractDocumentType, SearchDocument as EvalSearchDocument } from "./searchEvaluator";
 import { classifyQuery, QueryClassification, quickClassifyDocumentRequest } from "./queryClassifier";
 import { ECFRClient, ECFRSection, getECFRClient } from "./ecfrClient";
 import { DocumentCache, getDocumentCache } from "./documentCache";
+import { getConversationStore } from "./conversationStore";
 
 /**
  * DRS Search Configuration
@@ -20,6 +21,17 @@ const DRS_CONFIG = {
   maxResultsPerSearch: parseInt(process.env.DRS_MAX_RESULTS_PER_SEARCH || '1'),
   maxTotalDocuments: parseInt(process.env.DRS_MAX_TOTAL_DOCUMENTS || '4'),
   maxFreshDownloads: parseInt(process.env.DRS_MAX_FRESH_DOWNLOADS || '2'), // Limit fresh PDF downloads
+};
+
+/**
+ * Clarity check configuration
+ * Stage 1: Pre-fetch (classifier confidence)
+ * Stage 2: Post-fetch (too many or too few results)
+ */
+const CLARITY_CONFIG = {
+  minConfidenceForClear: 0.6,     // Below this, consider asking for clarification
+  maxDocsBeforeClarify: 6,        // If we'd fetch more than this, ask user to narrow down
+  minDocsForGoodAnswer: 1,        // Below this, results may be insufficient
 };
 
 /**
@@ -78,13 +90,19 @@ export class AircraftCertificationRAG {
 
   /**
    * Main RAG pipeline: classify → parallel fetch → generate answer
-   * Now uses intelligent query classification and eCFR integration
+   * Now supports multi-turn conversations with clarifying questions
    */
-  async askQuestion(question: string): Promise<RAGResponse> {
+  async askQuestion(
+    question: string, 
+    options: { sessionId?: string; isClarifying?: boolean; conversation?: StoredConversation | null } = {}
+  ): Promise<RAGResponse> {
+    const { sessionId, isClarifying = false, conversation = null } = options;
+    
     // Step 1: Check for quick document requests (e.g., "show me AC 23-8C")
     const quickDoc = quickClassifyDocumentRequest(question);
     if (quickDoc.isDocRequest && quickDoc.docType && quickDoc.docNumber) {
-      return this.handleDirectDocumentRequest(quickDoc.docType, quickDoc.docNumber);
+      const response = await this.handleDirectDocumentRequest(quickDoc.docType, quickDoc.docNumber);
+      return { ...response, sessionId };
     }
 
     // Step 2: Classify the query to understand intent and route to correct sources
@@ -93,14 +111,44 @@ export class AircraftCertificationRAG {
     
     try {
       console.log('🧠 Classifying query...');
-      classification = await classifyQuery(question, this.anthropic);
+      // If this is a clarifying response, include conversation context in classification
+      const classifyQuestion = conversation && conversation.turns.length > 0
+        ? this.buildQuestionWithContext(question, conversation)
+        : question;
+      classification = await classifyQuery(classifyQuestion, this.anthropic);
       classificationUsed = true;
-      console.log(`📋 Classification: intent=${classification.intent}, cfrParts=${classification.cfrParts?.join(',') || 'none'}, docTypes=${classification.documentTypes?.join(',') || 'none'}`);
+      console.log(`📋 Classification: intent=${classification.intent}, cfrParts=${classification.cfrParts?.join(',') || 'none'}, confidence=${classification.confidence}, needsClarification=${classification.needsClarification}`);
     } catch (error) {
       console.warn('⚠️ Classification failed, using fallback logic:', error);
     }
 
-    // Step 3: Parallel fetch from eCFR and DRS based on classification
+    // Step 3: Stage 1 Clarity Check (pre-fetch)
+    // Only ask for clarification if:
+    // - Classifier says it needs clarification AND
+    // - This is NOT already a response to a clarifying question AND
+    // - Confidence is below threshold
+    if (
+      classification?.needsClarification && 
+      !isClarifying && 
+      classification.confidence < CLARITY_CONFIG.minConfidenceForClear
+    ) {
+      console.log(`🤔 Stage 1: Query needs clarification (confidence: ${classification.confidence})`);
+      const clarifyingQuestion = classification.suggestedQuestion || 
+        "Could you be more specific about what you're looking for? For example, which CFR Part (23, 25, etc.) or which aspect of the regulation?";
+      
+      return {
+        answer: clarifyingQuestion,
+        sources: [],
+        sourceCount: 0,
+        context: "",
+        sessionId,
+        needsClarification: true,
+        clarifyingQuestion,
+        classificationUsed
+      };
+    }
+
+    // Step 4: Parallel fetch from eCFR and DRS based on classification
     const [ecfrDocs, drsDocs] = await Promise.all([
       this.fetchFromECFR(classification),
       this.fetchFromDRSByClassification(question, classification)
@@ -130,7 +178,7 @@ export class AircraftCertificationRAG {
     // DRS documents (high authority for ACs, ADs)
     allDocs = allDocs.concat(drsDocs);
 
-    // Step 4: Handle no results
+    // Step 5: Handle no results
     if (allDocs.length === 0) {
       // Last resort: try legacy DRS fallback
       console.log('🔄 No documents found, attempting legacy DRS fallback...');
@@ -146,15 +194,24 @@ export class AircraftCertificationRAG {
         sources: [],
         sourceCount: 0,
         context: "",
+        sessionId,
         ecfrUsed: ecfrDocs.length > 0,
         classificationUsed
       };
     }
 
-    // Step 5: Format context
-    const context = this.formatContext(allDocs);
+    // Step 6: Format context (include conversation history if available)
+    let context = this.formatContext(allDocs);
+    
+    // Add full conversation history to context - agent always has access to complete conversation
+    const conversationStore = getConversationStore();
+    const conversationContext = conversationStore.formatForContext(conversation);
+    
+    if (conversationContext) {
+      context = conversationContext + "\n\n" + context;
+    }
 
-    // Step 6: Generate answer with Claude
+    // Step 7: Generate answer with Claude
     const systemPrompt = this.buildEnhancedSystemPrompt(ecfrDocs.length > 0, drsDocs.length > 0);
 
     const userMessage = `${context}
@@ -180,6 +237,7 @@ Please answer based on the FAA regulations and guidance materials provided above
         sources: allDocs.map(doc => doc.title),
         sourceCount: allDocs.length,
         context,
+        sessionId,
         ecfrUsed: ecfrDocs.length > 0,
         cfrSources: cfrSources.length > 0 ? cfrSources : undefined,
         classificationUsed
@@ -191,12 +249,42 @@ Please answer based on the FAA regulations and guidance materials provided above
         sources: [],
         sourceCount: 0,
         context: "",
+        sessionId,
         error: `Error generating answer: ${error instanceof Error ? error.message : String(error)}`,
         classificationUsed
       };
     }
   }
 
+  /**
+   * Build question with conversation context for the classifier
+   * Preserves the original question topic and recent exchanges
+   */
+  private buildQuestionWithContext(question: string, conversation: StoredConversation): string {
+    if (conversation.turns.length === 0) return question;
+    
+    let contextStr = "This is a follow-up question in an ongoing conversation.\n\n";
+    
+    // Always include the FIRST user question (original topic)
+    const firstUserTurn = conversation.turns.find(t => t.role === 'user');
+    if (firstUserTurn) {
+      contextStr += `Original question: ${firstUserTurn.content}\n\n`;
+    }
+    
+    // Include recent turns (last 6) with more generous content limits
+    const recentTurns = conversation.turns.slice(-6);
+    if (recentTurns.length > 0) {
+      contextStr += "Recent conversation:\n";
+      for (const turn of recentTurns) {
+        const role = turn.role === 'user' ? 'User' : 'Assistant';
+        // Allow longer content (500 chars) to preserve important details
+        const content = turn.content.length > 500 ? turn.content.substring(0, 500) + '...' : turn.content;
+        contextStr += `${role}: ${content}\n`;
+      }
+    }
+    
+    return `${contextStr}\nCurrent question: ${question}`;
+  }
   /**
    * Handle direct document requests like "show me AC 23-8C"
    */
@@ -551,6 +639,14 @@ Rules:
    - Acceptable means of compliance
 7. If a question involves certification basis or applicability, be specific about which part (Part 23, 25, 27, 29, etc.)
 8. Suggest consulting with local FAA Aircraft Certification Office (ACO) or Designated Engineering Representative (DER) when regulations allow for interpretation or require coordination
+
+COMPLETENESS REQUIREMENTS (CRITICAL):
+When listing requirements, limits, criteria, or specifications:
+- Explicitly state whether your list is COMPLETE or PARTIAL based on the provided documents
+- If the provided documents contain a complete list, present ALL items - do not summarize or abbreviate
+- If you cannot verify completeness from the provided documents, clearly state: "This list may be incomplete. Refer to [source document] for the authoritative complete list."
+- For injury criteria, performance limits, test conditions, or pass/fail thresholds, ALWAYS include every single value from the source
+- Never use phrases like "includes" or "such as" when the user needs a complete list - either provide the full list or explicitly note it's partial
 
 Answer questions clearly and professionally, as if advising an aircraft manufacturer, engineering team, or certification applicant.`;
 

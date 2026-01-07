@@ -28,7 +28,7 @@ const CACHE_CONFIG = {
 
 /**
  * Document Cache using Azure Blob Storage
- * Uses the existing AzureWebJobsStorage connection string
+ * Uses BLOB_STORAGE_CONNECTION_STRING (AzureWebJobsStorage is reserved in Static Web Apps)
  */
 export class DocumentCache {
   private containerClient: ContainerClient | null = null;
@@ -37,7 +37,8 @@ export class DocumentCache {
   
   constructor() {
     // Check if storage is configured
-    const connectionString = process.env.AzureWebJobsStorage;
+    // Note: AzureWebJobsStorage is reserved in Azure Static Web Apps, so we use a custom name
+    const connectionString = process.env.BLOB_STORAGE_CONNECTION_STRING || process.env.AzureWebJobsStorage;
     if (!connectionString || connectionString === 'UseDevelopmentStorage=true') {
       console.warn('⚠️  DocumentCache: No Azure Storage configured, caching disabled');
       this.enabled = false;
@@ -59,7 +60,10 @@ export class DocumentCache {
     
     this.initPromise = (async () => {
       try {
-        const connectionString = process.env.AzureWebJobsStorage!;
+        const connectionString = process.env.BLOB_STORAGE_CONNECTION_STRING || process.env.AzureWebJobsStorage;
+        if (!connectionString) {
+          throw new Error('No storage connection string found');
+        }
         const blobService = BlobServiceClient.fromConnectionString(connectionString);
         this.containerClient = blobService.getContainerClient(CACHE_CONFIG.containerName);
         

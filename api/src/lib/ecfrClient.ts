@@ -4,6 +4,8 @@
  * https://www.ecfr.gov/api/
  */
 
+import { DocumentCache, getDocumentCache } from './documentCache';
+
 /**
  * eCFR Section content
  */
@@ -37,6 +39,11 @@ export interface ECFRStructureNode {
 export class ECFRClient {
   private baseURL = 'https://www.ecfr.gov/api';
   private latestDateCache: Map<number, string> = new Map();
+  private cache: DocumentCache;
+  
+  constructor() {
+    this.cache = getDocumentCache();
+  }
   
   /**
    * Get the latest available date for a title from eCFR API
@@ -78,6 +85,15 @@ export class ECFRClient {
    */
   async fetchSection(title: number, part: number, section: string): Promise<ECFRSection | null> {
     const fullSection = `${part}.${section}`;
+    const cacheKey = DocumentCache.cfrKey(title, part, section);
+    
+    // Check cache first
+    const cached = await this.cache.get<ECFRSection>(cacheKey);
+    if (cached) {
+      console.log(`📦 eCFR cache hit: § ${fullSection}`);
+      return cached.data;
+    }
+    
     console.log(`🌐 Fetching eCFR: Title ${title}, § ${fullSection}`);
     
     try {
@@ -123,7 +139,7 @@ export class ECFRClient {
       
       console.log(`✅ eCFR fetched: § ${fullSection} (${content.length} chars)`);
       
-      return {
+      const result: ECFRSection = {
         title,
         part,
         section,
@@ -133,6 +149,11 @@ export class ECFRClient {
         source: 'ecfr',
         url: `https://www.ecfr.gov/current/title-${title}/part-${part}/section-${fullSection}`
       };
+      
+      // Cache the result (7 days TTL for CFR sections)
+      await this.cache.set(cacheKey, result, DocumentCache.CFR_TTL_HOURS);
+      
+      return result;
       
     } catch (error) {
       console.error(`❌ eCFR fetch error for § ${fullSection}:`, error);

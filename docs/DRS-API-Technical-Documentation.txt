@@ -1,0 +1,736 @@
+
+
+DRS – API Technical Design Document 
+Page 1 of 
+ 
+ 
+ 
+ 
+Federal Aviation 
+Administration 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Technical Design Document 
+ 
+Application: Dynamic Regulatory System (DRS) 
+Interface Names: External Applications 
+ 
+ 
+ 
+ 
+Revision History 
+ 
+Version Description Date 
+1.0 Initial version 02/09/2022 
+2.0 Release 7 Changes 05/19/2022 
+3.0 Release 15 Changes 04/11/2024 
+4.0 
+Release 15.a - Updates to include 
+‘docLastModifiedDateSortOrder’ as a request parameter 
+05/23/2024 
+5.0 Release 16 – DRS API to download files 07/18/2024 
+6.0 Release 21 – DRS API to include metadata filters  08/07/2025 
+
+DRS – API Technical Design Document 
+Page 2 of 
+ 
+ 
+ 
+ 
+Contents 
+1.0 Overview ................................................................................. 3 
+2.0 Scope ...................................................................................... 3 
+2.1 Dynamic Regulatory System (DRS) ............................................. 3 
+3.0 Interface Details ....................................................................... 3 
+3.1 API URLs ................................................................................. 3 
+3.2 API Key .................................................................................. 3 
+3.3 API Endpoints to Retrieve Documents ......................................... 4 
+3.3.1 Retrieve Document Metadata ............................................. 4 
+3.3.2 Download Files ................................................................. 8 
+3.3.3 Get Additional Attachment Details ...................................... 9 
+3.3.4 Retrieve Document Metadata with Filters ........................... 10 
+4.0 Additional Details .................................................................... 14 
+ 
+
+DRS – API Technical Design Document 
+Page 3 of 
+ 
+ 
+ 
+1.0 Overview 
+This  document  presents  the  details  for retrieving regulatory  and  guidance  documents  from 
+Dynamic Regulatory System (DRS) by external applications. 
+ 
+ 
+2.0 Scope 
+The scope of this document is   to provide technical details of DRS API for external applications. 
+ 
+2.1 Dynamic Regulatory System (DRS) 
+DRS is a comprehensive knowledge center of regulatory and guidance material from the Office 
+of Aviation Safety (AVS) and beyond. It provides one central location for aviation regulations 
+and guidance materials. 
+DRS combines numerous document types from a dozen repositories into a    single searchable 
+application. The system includes pending, current and historical versions of all documents 
+along with their revision history. And to ensure you have the most current documents, it is 
+updated every 24 hours. 
+ 
+ 
+3.0 Interface Details 
+ 
+3.1 API URLs 
+HTTP Method     URL 
+ 
+GET 
+https://drs.faa.gov/api/drs/data-pull/<doctypeName
+> 
+  
+GET 
+https://drs.faa.gov/api/drs/data-pull/download/<id
+> 
+ 
+GET 
+https://drs.faa.gov/api/drs/data-pull/get-other-attachment-details/<id
+> 
+ 
+POST 
+https://drs.faa.gov/api/drs/data-pull/<doctypeName>/filtered
+ 
+ 
+ 
+3.2 API Key 
+ 
+Header parameters key Header parameters value  
+x-  api-key 
+To request an API key, please visit the DRS API page in the DRS Help & Training 
+section and click on "Request / Renew API Key", then follow the steps outlined. 
+
+DRS – API Technical Design Document 
+Page 4 of 
+ 
+ 
+ 
+3.3 API Endpoints to Retrieve Documents  
+ 
+The following API endpoints are used to retrieve document-related data from the Dynamic Regulatory 
+System (DRS) for a specified document type. 
+ 
+• The first API retrieves document metadata. 
+• The second and third APIs use information returned from the first API to download document 
+attachments or retrieve additional attachment details. 
+• The fourth API allows metadata-based filtering in the request, returning only documents that 
+match the specified criteria. 
+ 
+ 
+3.3.1   Retrieve Document Metadata 
+API URL -  1 
+https://drs.faa.gov/api/drs/data-pull/< doctypeName> 
+Method GET 
+Request 
+Parameters 
+Header: 
+{ 
+“x-api-key” : “{key}” 
+} 
+Note: To request an API key, please visit the DRS API page in the DRS Help & Training section and 
+click on "Request / Renew API Key", then follow the steps outlined. 
+ 
+Input parameters: 
+Path variable: doctypeName 
+Request Parameters: offset(optional), docLastModifiedDate(optional), 
+docLastModifiedDateSortOrder(optional) 
+ 
+1. Use Document Type name as path parameter in the API URL. 
+https://drs.faa.gov/api/drs/data-pull/AC 
+2. Provide “offset” as request parameter. It   is   an optional field. The DRS API will 
+return the first 750 documents by default if an “offset” is   not received in the 
+request. If an offset is provided in the request parameter, the API skips the 
+documents till the offset value and returns next 750 documents starting from 
+the “offset value +1”. 
+ 
+https://drs.faa.gov/api/drs/data-pull/AC (return first 750) 
+https://drs.faa.gov/api/drs/data-pull/AC?offset=750 (Skip first 750, start 
+= 751 and returns next 750) 
+https://drs.faa.gov/api/drs/data-pull/AC?offset=1500 (Skip first 1500, start=1501 and returns next 
+750) 
+3. Provide “docLastModifiedDate” as request parameter. It   is   an optional field. This 
+request parameter is used to retrieve documents added or updated after the 
+requested date. 
+The “docLastModifiedDate” value is   included in the DRS API response, but by 
+default, the response data is not sorted by this date. Instead, documents are 
+sorted according to the default sort order configuration of the DRS browse screen 
+for that document type. The default sort order is detailed in the Metadata mapping 
+
+DRS – API Technical Design Document 
+Page 5 of 
+ 
+ 
+ 
+spreadsheet available on the API help page. If a DRS API consumer needs to 
+retrieve documents added or updated after a    specific date, they can use 
+“docLastModifiedDate” as a filter in the API request parameter. 
+https://drs.faa.gov/api/drs/data-pull/AC?docLastModifiedDate=2021-05-09T14:38:11.964Z&offset=0 (Return 
+first 750 documents that have docLastModifiedDate    > 2021-05- 
+09T14:38:11.964Z) 
+ 
+ 
+https://drs.faa.gov/api/drs/data-pull/AC?docLastModifiedDate=2021-05-09T14:38:11.964Z&offset=750 (Skip 
+first 750, start = 751 and return next 750 documents that have 
+docLastModifiedDate > 2021-05-09T14:38:11.964Z) 
+ 
+ 
+https://drs.faa.gov/api/drs/data-pull/AC?docLastModifiedDate=2021-05-09T14:38:11.964Z&offset=1500 (Skip first 
+1500, start=1501 and returns next 750 documents that have docLastModifiedDate 
+> 2021-05-09T14:38:11.964Z) 
+ 
+ 
+4.    Include “docLastModifiedDateSortOrder” as a request parameter. This optional field 
+allows you to retrieve documents sorted by their last modified date. Accepted 
+values are “ASC” or “DESC.” 
+ 
+https://drs.faa.gov/api/drs/data-pull/AC?docLastModifiedDateSortOrder=DESC&offset=0 (Return   first   
+750 documents sorted by docLastModifiedDate descending) 
+ 
+https://drs.faa.gov/api/drs/data-pull/AC?docLastModifiedDateSortOrder=ASC&offset=0 (Return first 750 
+documents sorted by docLastModifiedDate ascending) 
+ 
+https://drs.faa.gov/api/drs/data-pull/AC?docLastModifiedDate=2021-05- 
+09T14:38:11.964Z&offset=0&docLastModifiedDateSortOrder=DESC 
+(Return first 750 documents 
+sorted by docLastModifiedDate descending that have docLastModifiedDate > 2021-
+05-09T14:38:11.964Z) 
+ 
+If this request parameter is not provided, the documents will be sorted according 
+to the default sort order configuration of the DRS browse screen for that 
+document type. 
+ 
+      Note: To apply additional filters, please refer to the API URL -4   
+ 
+
+DRS – API Technical Design Document 
+Page 6 of 
+ 
+ 
+ 
+ 
+CURL 
+Request 
+Examples 
+ 
+To get First 750 documents from document type “AC” 
+curl --location --request GET 
+'https://drs.faa.gov/api/drs/data-pull/AC?offset=0' --header 'x-api-key: xxx' > 
+AC_external_only.json 
+ 
+ 
+To get First 750 documents from document type “AC” that are added or    updated after the 
+date-time ‘2021-05-09T14:38:11.964Z’ 
+ 
+curl --location --request GET 
+'https://drs.faa.gov/api/drs/data-pull/AC?docLastModifiedDate=2021-05- 
+09T14:38:11.964Z&offset=0' --header 'x-api-key: xxx' > AC_external_only.json 
+ 
+Response - 
+Success 
+Received response with HTTP Code 200 
+{ 
+"summary": { 
+ 
+"doctypeName": "AC", 
+"drsDoctypeName": "Advisory Circulars (AC)", "count": 750, 
+"hasMoreItems": true, 
+"totalItems": 1765, 
+"offset": 0, 
+"sortBy": "drs:documentNumber", 
+"sortByOrder": "ASC" 
+}, 
+"documents": [..list of documents...] 
+} 
+Summary section has below details 
+1. doctypeName – Requested Document Type name 
+2. drsDoctypeName – Document Type name used in DRS application 
+3. count – Number of documents returned in the response (Maximum 750 in each 
+call, can expect less than 750 based on offset and available items) 
+4. hasMoreItems – Boolean flag indicates whether more documents are 
+available or not 
+5. totalItems – Total number of documents available 
+6. offset – Offset value from the request 
+7. sortBy – Metadata field name used for sorting while retrieving documents 
+8. sortByOrder – The sort order used for sorting while retrieving documents 
+ 
+ 
+
+DRS – API Technical Design Document 
+Page 7 of 
+ 
+ 
+ 
+ 
+ 
+“documents” is  an  array  where  each  entry  represents  a  document  and  contains  a  list  of  
+metadata  names  and  their  corresponding  values.  A  metadata  name  is  a  string,  and  its  
+value can be of one of the following types: text, array of text values, or date. All metadata 
+fields of type date will use the format YYYY-MM-DD. 
+ The following details are common to all documents across all document types in DRS. 
+docLastModifiedDate - The date and time (in UTC) when the document was last modified. 
+This metadata field can be used as a request filter to retrieve documents that were added 
+or updated after a specific date and time. 
+documentGuid - Unique Id for the document in DRS documentURL 
+- Unique URL for the document in DRS 
+Example is provided below. 
+ 
+
+DRS – API Technical Design Document 
+Page 8 of 
+ 
+ 
+ 
+ 
+Response - 
+Error 
+If the provided API key is   invalid, the API will return a    403 Forbidden response code. 
+ 
+Other possible error responses include: 
+ 
+1. If the document type requested is   invalid 
+{ 
+"errorMessage":  "The doctype <document type name> is not present in DRS" 
+} 
+2. If the internal only document type is   requested using external only api-key 
+{ 
+"errorMessage":  "Could not process the request. The doctype <document type name> is internal only doctype" 
+} 
+3. If any system error occurs 
+{ 
+"errorMessage":  "Unable to retrieve documents due to system error, Please try after some time or   contact DRS application team." 
+} 
+ 
+ 
+3.3.2   Download Files 
+API URL - 
+2 
+https://drs.faa.gov/api/drs/data-pull/download/<id> 
+Method GET 
+ 
+ 
+ 
+Request 
+Parameters 
+Header: 
+{ 
+“x-api-key” :   “{key}” 
+} 
+{key}: same key used for retrieving the document metadata (API URL – 1
+) 
+ 
+ 
+Input parameters: 
+ 
+Path variable: id of the file to be downloaded. The response from the first API (API URL – 1
+) 
+includes the following fields for each document's metadata details. These fields are only 
+present if a valid file exists for download. 
+ 
+"mainDocumentDownloadURL": < API Endpoint URL for    File Download > "mainDocumentFileName": <File Name> 
+ 
+ 
+The 'mainDocumentDownloadURL' provides the API endpoint for downloading the main 
+document file. Use this URL to download the file. 'mainDocumentFileName' refers to the 
+name of the file. 
+ 
+CURL 
+Request 
+Examples 
+ 
+ 
+curl -k --location --request GET ‘http://drs.faa.gov/api/drs/data-pull/download/<id>’ --    header 'x-api-key: 
+xxx'  > FileName 
+Response - 
+Success 
+Success response with HTTP Code 200 and the response body is a byte stream. 
+Response - 
+Error 
+If the provided API key is invalid, the API will return a 403 Forbidden response code. 
+ 
+Other possible error responses include: 
+ 
+'404 Not Found,' '504 Gateway Timeout,' or '500 Internal Server Error' Consider 
+incorporating retry logic to manage '504 Gateway Timeout' 
+occurrences. 
+ 
+ 
+
+DRS – API Technical Design Document 
+Page 9 of 
+ 
+ 
+ 
+          3.3.3   Get A dditional Attachment Details 
+ 
+API URL - 3 
+https://drs.faa.gov/api/drs/data-pull/get-other-attachment-details/<id> 
+Method GET 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Request 
+Parameters 
+Header: 
+{ 
+“x-api-key” :   “{key}” 
+} 
+{key}: same key used for retrieving the document metadata (API URL – 1
+) 
+ 
+Input parameters: 
+Path variable: fille id of the primary document file  
+ 
+The response from the first API ( API URL – 1)  includes the following fields to determine if 
+this document has valid additional attachments. These fields are only present if a valid file 
+exists for download. 
+ 
+"hasMoreAttachments":  <true/false> 
+"otherAttachmentDetailsUrl": <URL to get other attachment details if other attachments exists > 
+ 
+If the 'hasMoreAttachments' value is   'false', the document has no additional attachments, 
+and the 'otherAttachmentDetailsUrl' field will be absent from the response of the first API. 
+If the 'hasMoreAttachments' value is 'true', the document has additional attachments, and 
+the 'otherAttachmentDetailsUrl' field will be present. This URL can be used to retrieve 
+details about the additional attachments, including their download URLs and file names. 
+Once the response with details is received, API URL – 2
+ can be used to download these 
+additional attachments. 
+CURL 
+Request 
+Examples 
+curl -k --location --request GET 'http://drs.faa.gov/api/drs/data-pull/get- other-
+attachment-details/<id>' --header 'x-api-key: xxx'  > other-  attachments.json 
+Response - 
+Success 
+A successful response will have a status code of 200. A sample response is shown below. 
+ 
+ 
+ 
+If the API key is designated for external-only documents and the document contains 
+internal-only additional attachments, those attachments will not be included in the 
+response. If no additional attachments are present or if all additional attachments are 
+internal-only, the response will be as shown below. 
+ 
+ 
+ 
+Response - 
+Error 
+If the provided API key is invalid, the API will return a 403 Forbidden response code. 
+  Other possible error responses include: 
+1. If any system error occurs 
+{ "errorMessage":  "Unable to retrieve documents due to system error, Please try after some time or   contact DRS application team."} 
+ 
+
+DRS – API Technical Design Document 
+Page 10 of 
+ 
+ 
+ 
+         3.3.4    Retrieve Document Metadata with Filters 
+API URL - 4 
+https://drs.faa.gov/api/drs/data-pull/<doctypeName>/filtered 
+Method POST 
+Request 
+Parameters 
+Header: 
+{ 
+“x-api-key” :   “{key}” 
+} 
+Note: To request an API key, please visit the DRS API page in the DRS Help & Training 
+section and click on "Request / Renew API Key", then follow the steps outlined. 
+ 
+ Request parameters 
+Path Variable: doctypeName 
+• Required: Yes 
+• Description: The document type name to retrieve metadata for. 
+Request Body 
+• Required: Yes 
+• Payload: Must be a valid JSON object. It can be an empty JSON {}, or include one 
+or more of the following optional fields: 
+ { 
+  "offset": <int value>, 
+  "docLastModifiedDate": <date-time>, 
+  "sortOrder": <"DESC"> or <"ASC">, 
+  "documentFilters": { 
+   "<metadata key>": [<value1>, <value2>, ...], 
+   "<another metadata key>": [<value1>, <value2>], 
+   "<date metadata key>": [<from date>, <to date>] 
+  } 
+ } 
+           Example Payload for PMA Document Type  
+ { 
+  "offset": 0, 
+  "docLastModifiedDate": "2021-12-21T14:04:31.062Z", 
+  "sortOrder": "DESC", 
+  "documentFilters": { 
+   "drs:status": [ 
+    "Current", 
+    "Historical" 
+   ], 
+   "drs:pmaNumber": [ 
+    "PQ04418CE" 
+   ], 
+   "drs:pmaSupDate": [ 
+    "2020-01-01", 
+    "2025-07-31" 
+   ] 
+  } 
+ } 
+ 
+1. Use Document Type Name as Path Parameter 
+Example: 
+https://drs.faa.gov/api/drs/data-pull/PMA/filtered
+ 
+ 
+
+DRS – API Technical Design Document 
+Page 11 of 
+ 
+ 
+ 
+2. Using the offset Parameter 
+It   is   an optional field. The DRS API will return the first 750 documents by default 
+if an “offset” is   not received in the request. If an offset is provided in the 
+request parameter, the API skips the documents till the offset value and returns 
+next 750 documents starting from the “offset value +1”. 
+                Request JSON without offset (or with offset = 0): 
+                {}  
+                     Returns 750 documents. 
+                        
+            Request with offset = 750:  
+                 { 
+  "offset": 750 
+    } 
+                  Skips the first 750 documents and return the next 750 (starting from 751). 
+3. Using the docLastModifiedDate Parameter. 
+It   is   an optional field. This field is used to retrieve documents added or updated 
+after the requested date. 
+The “docLastModifiedDate” value is   included in the DRS API response, but by 
+default, the response data is not sorted by this date. Instead, documents are 
+sorted according to the default sort order configuration of the DRS browse screen 
+for that document type. The default sort order is detailed in the Metadata mapping 
+spreadsheet available on the API help page. If a DRS API consumer needs to 
+retrieve documents added or updated after a specific date, they can use 
+“docLastModifiedDate” as a filter in the API request body. 
+   { 
+                          "offset": 0, 
+  "docLastModifiedDate": "2021-05-09T14:38:11.964Z" 
+    } 
+ Returns first 750 documents with docLastModifiedDate > 2021-05-
+09T14:38:11.964Z.  
+               { 
+  "offset": 750, 
+  "docLastModifiedDate": "2021-05-09T14:38:11.964Z" 
+    } 
+               Skip first 750 and return next 750 documents that have docLastModifiedDate > 
+2021-05  -09T14:38:11.964Z 
+ 
+4. Using the sortOrder Parameter. This optional field allows you to retrieve 
+documents sorted by their last modified date. Accepted values are “ASC” or 
+“DESC.” 
+                   { 
+           "offset": 0, 
+                         "sortOrder": "DESC" 
+    } 
+                   Returns first 750 documents sorted by docLastModifiedDate in descending order. 
+                 { 
+            "offset": 0, 
+                         "sortOrder": "ASC" 
+                  }  
+                 Returns first 750 documents sorted by docLastModifiedDate in ascending order. 
+ 
+                   { 
+  "offset": 0, 
+  "docLastModifiedDate": "2021-05-09T14:38:11.964Z", 
+                                          "sortOrder": "DESC" 
+               }  
+            Returns first 750 documents that have docLastModifiedDate > 2021-05-
+
+DRS – API Technical Design Document 
+Page 12 of 
+ 
+ 
+ 
+09T14:38:11.964Z, sorted in descending order. 
+If this request parameter is not provided, the documents will be sorted according 
+to the default sort order configuration of the DRS browse screen for that 
+document type. 
+5. Using the documentFilters Parameter.  
+      The documentFilters field is optional. It allows you to retrieve documents that 
+match specific Metadata filters provided in the request. 
+      Each filter is specified as a key-value pair, where: 
+• Key = metadata field name 
+• Value = array of filter values 
+        Example: 
+  { 
+   "offset": 0, 
+   "docLastModifiedDate": "2021-12-21T14:04:31.062Z", 
+   "sortOrder": "DESC", 
+   "documentFilters": { 
+    "drs:status": [ 
+     "Current", 
+     "Historical" 
+    ], 
+    "drs:pmaNumber": [ 
+     "PQ04418CE" 
+    ], 
+    "drs:pmaSupDate": [ 
+     "2020-01-01", 
+     "2025-07-31" 
+    ] 
+   } 
+  } 
+    
+        This request will: 
+• Return the first 750 documents 
+• Only include documents with a docLastModifiedDate after 2021-12  -
+21T14:04:31.062Z 
+• Sort results by docLastModifiedDate in descending order 
+• Filter documents that: 
+ Have a drs:status of Current or Historical 
+ Have a drs:pmaNumber value of PQ04418CE 
+ Have a drs:pmaSupDate between "2020-01  -01" and "2025-07  -31" 
+ 
+          
+ 
+Rules for 
+Using 
+metadata 
+filters in 
+documentFilte
+rs 
+ 
+• Each metadata field must be passed as a list (array), even if only one value is 
+provided. 
+ "drs:status": ["Current"] 
+ "drs:status": ["Current", "Historical"] 
+ 
+• For date-type metadata fields, the array must contain exactly two values: 
+ The first is the start date 
+ The second is the end date 
+ Format: YYYY-MM-DD 
+        Example: 
+        "drs:pmaSupDate": ["2020-01-01", "2025-07-31"] 
+           
+
+DRS – API Technical Design Document 
+Page 13 of 
+ 
+ 
+ 
+Rules for 
+Using 
+Keyword 
+Search filters 
+in 
+documentFilte
+rs 
+• In addition to metadata fields specific to the selected document type, the filter also 
+supports keyword search within document content. 
+To enable keyword search, pass "Keyword" as the key and provide a list of terms to 
+search for.              
+      Example:  
+  { 
+   "offset": 0, 
+   "documentFilters": { 
+    "drs:status": [ 
+     "Current", 
+     "Historical" 
+    ], 
+    "Keyword": [ 
+     "ASTM International", 
+     "Shearography" 
+    ] 
+   } 
+  } 
+          The above request will filter documents that: 
+ Have a drs:status of Current or Historical 
+ Have documents that contain ASTM International or Shearography 
+anywhere in the document content
+ 
+ 
+ 
+Validation 
+Rules for 
+documentFilte
+rs 
+• Unsupported Filter Key: Metadata filter keys must be defined for the requested 
+document type. Unrecognized or unsupported keys will cause the request to be 
+rejected. 
+• Maximum Number of Filters: The total number of filters must not exceed the 5. 
+• Maximum Values Per Filter: Each filter can include multiple values but must not 
+exceed the allowed 10. 
+• Empty Filter Values: Filters with no usable value (null, empty, or whitespace-only) will 
+be ignored. If all filters are empty after cleaning, the entire documentFilters section is 
+treated as null. 
+• Date Filter Format: Date filters must be a list of exactly two valid dates in YYYY-MM-
+DD 
+• Invalid Date Values: If either the start or end date is invalid or unpassable, the 
+request will be rejected. 
+• Invalid Filter Value Type: If the value is not an array, the request will be rejected. 
+• Date filters must not be passed as plain strings. 
+• Post-Cleaning Empty Filter: After removing null/empty values, if a filter has no values 
+left, it will be skipped. If all filters become empty, the entire documentFilters section is 
+removed from the request. 
+  
+Response - 
+Success 
+ Success response is received with HTTP Code 200 
+  API Response data is same as first API’s Response data 
+Response - 
+Error 
+ If the provided API key is invalid, the API will return a    403 Forbidden response code. 
+ If the documentFilters validation fails,  the API will return a 400 Bad Request code with 
+below error message.  
+{ 
+"errorMessage":  "One or more filters provided are invalid or not applicable for the requested document type. Please review the filter names and their values." 
+} 
+ 
+ Other possible error responses include: 
+ 
+
+DRS – API Technical Design Document 
+Page 14 of 
+ 
+ 
+ 
+ If the document type requested is invalid 
+{ 
+"errorMessage": "The doctype <document type name> is not present in DRS" 
+} 
+ If the internal only document type is   requested using external only api-key 
+{ 
+"errorMessage": "Could not process the request. The doctype <document type name> is internal only doctype" 
+} 
+ If any system error occurs 
+{ 
+"errorMessage": "Unable to retrieve documents due to system error, Please try after some time or   contact DRS application team." 
+} 
+ 
+4.0 Additional Details 
+DRS will provide a detailed spreadsheet of all Document Types available along with their 
+metadata field names. The details below can be found in the spreadsheet. 
+ 
+1. Document Type Name in API request (a short name for the document type) 
+2. Document Type name in DRS 
+3. Metadata names for the Document Type that are sent in the response 
+4. Metadata names for the Document Type that are used in DRS application 
+5. Metadata value data type (can be Text or    Date or    Array of values) 

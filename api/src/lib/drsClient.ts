@@ -78,6 +78,81 @@ export class DRSClient {
   }
 
   /**
+   * Search for documents in DRS using filtered POST endpoint with keyword search
+   * Supports multiple keywords and status filtering for better relevance
+   * 
+   * @param keywords Array of keywords to search in document content
+   * @param docType Document type (AC, TSO, Order, etc.)
+   * @param options Optional: status filter, max results, document number prefix filter
+   * @returns Array of matching documents
+   */
+  async searchDocumentsFiltered(
+    keywords: string[],
+    docType: string,
+    options: { statusFilter?: string[]; maxResults?: number; docNumberPrefix?: string } = {}
+  ): Promise<DRSDocument[]> {
+    const { statusFilter = ['Current'], maxResults = 10, docNumberPrefix } = options;
+    
+    try {
+      const prefixInfo = docNumberPrefix ? ` prefix=${docNumberPrefix}` : '';
+      console.log(`🔍 DRS filtered search: keywords=[${keywords.join(', ')}] type=${docType} status=${statusFilter.join(',')}${prefixInfo}`);
+
+      const url = `${this.baseURL}/data-pull/${docType}/filtered`;
+
+      // Build document filters (max 5 filters, max 10 values per filter)
+      const documentFilters: Record<string, string[]> = {
+        'drs:status': statusFilter,
+        'Keyword': keywords.slice(0, 10) // Max 10 keyword values
+      };
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'x-api-key': this.apiKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          offset: 0,
+          documentFilters
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('DRS API error response:', errorText);
+        throw new Error(`DRS API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (!data?.documents || !Array.isArray(data.documents)) {
+        console.warn('⚠️ DRS response has no documents array');
+        return [];
+      }
+
+      console.log(`✅ DRS found ${data.documents.length} documents (total: ${data.summary?.totalItems || 'unknown'})`);
+
+      // Filter by document number prefix if provided (e.g., "AC 23" for Part 23 ACs)
+      let filteredDocs = data.documents;
+      if (docNumberPrefix) {
+        const prefixUpper = docNumberPrefix.toUpperCase();
+        filteredDocs = data.documents.filter((doc: DRSDocumentRaw) => {
+          const docNum = (doc['drs:documentNumber'] || '').toUpperCase();
+          return docNum.startsWith(prefixUpper);
+        });
+        console.log(`  📌 Filtered to ${filteredDocs.length} docs matching prefix "${docNumberPrefix}"`);
+      }
+
+      // Normalize and limit results
+      return filteredDocs.slice(0, maxResults).map(normalizeDRSDocument);
+
+    } catch (error) {
+      console.error('❌ DRS filtered search error:', error);
+      throw new Error(`DRS search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
    * Search for documents in DRS by keyword and optional document type
    * @param query Search query
    * @param docType Optional document type (AC, AD, CFR, etc.)
@@ -306,6 +381,50 @@ export class DRSClient {
       
     } catch (error) {
       console.error(`❌ Failed to fetch/extract ${docType}/${docNumber}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch document directly using pre-fetched metadata (no additional search)
+   * Use this when you already have document metadata from searchDocumentsFiltered
+   * 
+   * @param doc Document metadata with downloadURL
+   * @param docType Document type (for cache key)
+   * @returns Extracted text and metadata, or null if failed
+   */
+  async fetchDocumentDirect(
+    doc: DRSDocument,
+    docType: string
+  ): Promise<{ text: string; doc: DRSDocument } | null> {
+    if (!doc.mainDocumentDownloadURL) {
+      console.log(`❌ No download URL for: ${doc.documentNumber}`);
+      return null;
+    }
+    
+    const cacheKey = DocumentCache.drsKey(docType, doc.documentNumber);
+    
+    // Try cache first
+    const cached = await this.cache.get<{ text: string; doc: DRSDocument }>(cacheKey);
+    if (cached) {
+      console.log(`📦 DRS cache hit: ${docType}/${doc.documentNumber}`);
+      return cached.data;
+    }
+    
+    try {
+      // Download and extract directly - no need to search again
+      const pdfBuffer = await this.downloadDocument(doc.mainDocumentDownloadURL);
+      const text = await this.extractTextFromPDF(pdfBuffer);
+      
+      const result = { text, doc };
+      
+      // Cache the result
+      await this.cache.set(cacheKey, result, DocumentCache.DRS_TTL_HOURS);
+      
+      return result;
+      
+    } catch (error) {
+      console.error(`❌ Failed to fetch/extract ${doc.documentNumber}:`, error);
       return null;
     }
   }

@@ -24,29 +24,30 @@ const DRS_CONFIG = {
 };
 
 /**
- * Build DRS search queries from CFR classification
- * Prioritizes sections (more specific) over parts (broader)
+ * Build DRS keyword search terms from CFR classification
+ * Uses phrases that commonly appear in AC content like "14 CFR Part 23"
+ * Also extracts topic keywords from the classification
  */
-function buildCFRSearchQueries(classification: QueryClassification): string[] {
-  const queries: string[] = [];
+function buildDRSKeywords(classification: QueryClassification): string[] {
+  const keywords: string[] = [];
   
-  // Sections are most specific (e.g., "23.2150")
-  if (classification.cfrSections) {
-    for (const section of classification.cfrSections) {
-      if (queries.length >= DRS_CONFIG.maxCfrQueries) break;
-      queries.push(section);
-    }
-  }
-  
-  // Parts are broader (e.g., "Part 23")
-  if (classification.cfrParts) {
+  // Add CFR part references in common phrasings found in ACs
+  // ACs typically reference "14 CFR Part 23" or "Part 23" or "§ 23.xxx"
+  if (classification.cfrParts && classification.cfrParts.length > 0) {
     for (const part of classification.cfrParts) {
-      if (queries.length >= DRS_CONFIG.maxCfrQueries) break;
-      queries.push(`Part ${part}`);
+      // "14 CFR Part 23" is the most common phrasing in ACs
+      keywords.push(`14 CFR Part ${part}`);
     }
   }
   
-  return queries;
+  // Add topic keywords if available (e.g., "stall speed", "airworthiness")
+  if (classification.topics && classification.topics.length > 0) {
+    for (const topic of classification.topics.slice(0, 3)) {
+      keywords.push(topic);
+    }
+  }
+  
+  return keywords.slice(0, 10); // DRS API max 10 values per filter
 }
 
 export class AircraftCertificationRAG {
@@ -392,41 +393,89 @@ Please answer based on the FAA regulations and guidance materials provided above
       }
     }
     
-    // 2. NEW: Search for documents related to CFR parts/sections from classifier
-    const cfrQueries = buildCFRSearchQueries(classification);
+    // 2. NEW: Search for documents using CFR part keywords and topic keywords
+    const drsKeywords = buildDRSKeywords(classification);
     // Default document types - AD is not a valid DRS endpoint, so exclude it
     const allDocTypes = ['AC', 'TSO', 'Order'] as const;
     const docTypes = (classification.documentTypes && classification.documentTypes.length > 0)
       ? classification.documentTypes.filter(t => t !== 'AD').slice(0, DRS_CONFIG.maxDocTypes)
       : allDocTypes.slice(0, DRS_CONFIG.maxDocTypes);
     
-    if (cfrQueries.length > 0 && documents.length < DRS_CONFIG.maxTotalDocuments) {
-      console.log(`📚 CFR→DRS mapping: searching ${cfrQueries.length} queries × ${docTypes.length} types`);
+    // Extract CFR parts for targeted AC search (AC 23-xx for Part 23, etc.)
+    const cfrParts = classification.cfrParts || [];
+    
+    if (drsKeywords.length > 0 && documents.length < DRS_CONFIG.maxTotalDocuments) {
+      console.log(`📚 CFR→DRS keyword search: keywords=[${drsKeywords.join(', ')}] types=[${docTypes.join(', ')}] parts=[${cfrParts.join(', ')}]`);
       
-      for (const query of cfrQueries) {
+      for (const docType of docTypes) {
         if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
         
-        for (const docType of docTypes) {
-          if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+        try {
+          // For ACs, search Part-specific documents first (AC 23-xx, AC 25-xx, etc.)
+          // These are most relevant as they're written specifically for that Part
+          if (docType === 'AC' && cfrParts.length > 0) {
+            console.log(`  📌 Starting Part-specific AC search for parts: [${cfrParts.join(', ')}]`);
+            for (const part of cfrParts.slice(0, 2)) {
+              if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+              
+              // Search for Part-specific ACs with topic keywords
+              const topicKeywords = (classification.topics || []).slice(0, 3);
+              const searchKeywords = topicKeywords.length > 0 ? topicKeywords : drsKeywords;
+              console.log(`  🔎 Part ${part}: searching with keywords=[${searchKeywords.join(', ')}]`);
+              
+              const searchResults = await drsClient.searchDocumentsFiltered(
+                searchKeywords,
+                docType,
+                { 
+                  statusFilter: ['Current'], 
+                  maxResults: DRS_CONFIG.maxResultsPerSearch * 5,
+                  docNumberPrefix: `AC ${part}-`  // e.g., "AC 23-" for Part 23 ACs
+                }
+              );
+              
+              console.log(`  📊 Part ${part}: found ${searchResults.length} matching ACs`);
+              
+              for (const result of searchResults) {
+                if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+                if (!result?.mainDocumentDownloadURL || !result?.documentNumber) continue;
+                if (fetchedUrls.has(result.mainDocumentDownloadURL)) {
+                  console.log(`  ⏭️ Skipping duplicate: ${result.documentNumber}`);
+                  continue;
+                }
+                
+                const fetched = await drsClient.fetchDocumentDirect(result, docType);
+                
+                if (fetched) {
+                  const maxChars = 30000;
+                  addDocument({
+                    title: fetched.doc.title,
+                    chunk: fetched.text.substring(0, maxChars),
+                    score: 0.9  // Higher score for Part-specific ACs
+                  }, result.mainDocumentDownloadURL);
+                  console.log(`  ✅ Found Part ${part} AC: ${fetched.doc.title}`);
+                }
+              }
+            }
+          }
           
-          try {
-            console.log(`  🔍 Searching DRS: "${query}" in ${docType}`);
-            const searchResults = await drsClient.searchDocuments(query, docType);
-            const topResults = searchResults.slice(0, DRS_CONFIG.maxResultsPerSearch);
+          // Fallback: general keyword search if no Part-specific ACs found
+          if (documents.length < DRS_CONFIG.maxTotalDocuments) {
+            const searchResults = await drsClient.searchDocumentsFiltered(
+              drsKeywords,
+              docType,
+              { statusFilter: ['Current'], maxResults: DRS_CONFIG.maxResultsPerSearch * 3 }
+            );
             
-            for (const result of topResults) {
+            for (const result of searchResults) {
               if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
               if (!result?.mainDocumentDownloadURL || !result?.documentNumber) continue;
-              // Deduplicate by download URL - same PDF can appear in multiple searches
               if (fetchedUrls.has(result.mainDocumentDownloadURL)) {
                 console.log(`  ⏭️ Skipping duplicate: ${result.documentNumber}`);
                 continue;
               }
               
-              const fetched = await drsClient.fetchDocumentWithCache(
-                result.documentNumber,
-                docType
-              );
+              // Use direct fetch - we already have the metadata, no need to search again
+              const fetched = await drsClient.fetchDocumentDirect(result, docType);
               
               if (fetched) {
                 const maxChars = 30000;
@@ -438,9 +487,9 @@ Please answer based on the FAA regulations and guidance materials provided above
                 console.log(`  ✅ Found: ${fetched.doc.title}`);
               }
             }
-          } catch (error) {
-            console.warn(`  ⚠️ DRS search for "${query}" in ${docType} failed:`, error);
           }
+        } catch (error) {
+          console.warn(`  ⚠️ DRS filtered search for ${docType} failed:`, error);
         }
       }
     }

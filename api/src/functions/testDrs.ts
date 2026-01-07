@@ -1,33 +1,55 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { DRSClient } from "../lib/drsClient";
 
 export async function testDrs(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
   context.log(`Testing DRS connectivity`);
 
-  const drsClient = new DRSClient();
+  const apiKey = process.env.DRS_API_KEY || '';
+  const baseURL = process.env.DRS_API_ENDPOINT || 'https://drs.faa.gov/api/drs';
   
   try {
-    // Test 1: Check if API key is set
-    const hasKey = !!process.env.DRS_API_KEY;
-    const keyLength = process.env.DRS_API_KEY?.length || 0;
-    const endpoint = process.env.DRS_API_ENDPOINT || 'https://drs.faa.gov/api/drs (default)';
+    // Direct fetch test - bypass DRSClient
+    const url = `${baseURL}/data-pull/AC/filtered`;
+    context.log(`Fetching: ${url}`);
     
-    // Test 2: Try to search for a known document
-    context.log('Attempting DRS search for AC 23-8C...');
-    const doc = await drsClient.searchByDocumentNumber('23-8C', 'AC');
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        offset: 0,
+        documentFilters: {
+          'drs:status': ['Current'],
+          'Keyword': ['23-8C']
+        }
+      })
+    });
+    
+    const status = response.status;
+    const statusText = response.statusText;
+    const responseText = await response.text();
+    
+    let parsed = null;
+    try {
+      parsed = JSON.parse(responseText);
+    } catch (e) {
+      // Not JSON
+    }
     
     return {
       status: 200,
       jsonBody: {
-        hasApiKey: hasKey,
-        apiKeyLength: keyLength,
-        endpoint: endpoint,
-        searchResult: doc ? {
-          documentNumber: doc.documentNumber,
-          title: doc.title,
-          hasDownloadUrl: !!doc.mainDocumentDownloadURL
-        } : null,
-        success: !!doc
+        hasApiKey: !!apiKey,
+        apiKeyLength: apiKey.length,
+        apiKeyPrefix: apiKey.substring(0, 8) + '...',
+        endpoint: baseURL,
+        fetchStatus: status,
+        fetchStatusText: statusText,
+        responseLength: responseText.length,
+        documentCount: parsed?.summary?.totalItems || 0,
+        firstDocNumber: parsed?.documents?.[0]?.['drs:documentNumber'] || null,
+        success: status === 200 && parsed?.documents?.length > 0
       }
     };
   } catch (error) {
@@ -36,9 +58,9 @@ export async function testDrs(request: HttpRequest, context: InvocationContext):
       status: 500,
       jsonBody: {
         error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        hasApiKey: !!process.env.DRS_API_KEY,
-        apiKeyLength: process.env.DRS_API_KEY?.length || 0
+        errorName: error instanceof Error ? error.name : 'Unknown',
+        hasApiKey: !!apiKey,
+        apiKeyLength: apiKey.length
       }
     };
   }

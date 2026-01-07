@@ -14,6 +14,42 @@
 
 ---
 
+## Implementation Status (January 2026)
+
+### ✅ Completed
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Query Classifier (LLM-based) | ✅ Done | Claude Sonnet, extracts CFR parts/sections/topics |
+| eCFR API Integration | ✅ Done | Live regulatory text from ecfr.gov |
+| DRS API Integration | ✅ Done | ACs, TSOs, Orders with PDF extraction |
+| Document Caching (Blob Storage) | ✅ Done | 7-day TTL for CFR, 24h for DRS |
+| Cache-first Optimization | ✅ Done | Prioritizes cached docs to reduce latency |
+| Web UI (React Chat) | ✅ Done | Responsive chat interface |
+| Direct Document Requests | ✅ Done | "Show me AC 23-8C" → instant response |
+| Multi-source Context | ✅ Done | Combines eCFR + DRS in answers |
+| Azure Static Web Apps | ✅ Done | Production deployment |
+
+### 🔄 In Progress / Planned
+
+| Feature | Status | Effort | Notes |
+|---------|--------|--------|-------|
+| Multi-turn Conversation | 🔄 Planned | ~10h | Session storage, history context |
+| Clarifying Questions (Stage 1) | 🔄 Planned | Part of above | Pre-fetch clarity check |
+| Narrowing Questions (Stage 2) | 🔄 Planned | Part of above | Post-fetch clarity check |
+| Azure OpenAI Migration | ⏸️ Optional | ~2h | Replace Claude for Azure billing |
+
+### ❌ Not in MVP
+
+| Feature | Phase |
+|---------|-------|
+| Document upload/analysis | Phase 2 |
+| Compliance matrix generation | Phase 3 |
+| User authentication | Phase 2+ |
+| Proactive DRS monitoring | Phase 4 |
+
+---
+
 ## What the MVP Does
 
 **"Clarifying RAG Agent with DRS Fallback + Web UI"**
@@ -33,71 +69,119 @@ The agent intelligently handles aviation regulatory questions through a multi-st
 
 ## Architecture
 
+### Current Implementation (v1 - Single Turn)
+
 ```
 ┌──────────────────┐
-│   Web Browser    │ React chat interface
+│   Web Browser    │ React + Vite chat interface
 │   (Frontend)     │
 └────────┬─────────┘
          │ HTTP
          ↓
 ┌─────────────────────────────────────────┐
-│      FastAPI Backend (Monolith)         │
-│                                          │
+│   Azure Static Web Apps                 │
+│   (Azure Functions Backend)             │
+│                                         │
 │  ┌────────────────────────────────┐    │
-│  │   LangGraph Agent              │    │
+│  │   RAG Pipeline (TypeScript)    │    │
 │  │   ┌──────────┐  ┌───────────┐ │    │
-│  │   │ Clarity  │→ │ Enhanced  │ │    │
-│  │   │ Check    │  │ Search    │ │    │
+│  │   │ Query    │→ │ Parallel  │ │    │
+│  │   │Classifier│  │  Fetch    │ │    │
 │  │   └──────────┘  └───────────┘ │    │
 │  └────────────────────────────────┘    │
 │           ↓           ↓                 │
 │  ┌─────────────┐  ┌──────────┐        │
-│  │  RAG Tool   │  │ DRS Tool │        │
+│  │eCFR Client  │  │DRS Client│        │
 │  │  (module)   │  │ (module) │        │
 │  └─────────────┘  └──────────┘        │
 │           │            │               │
 │  ┌────────────────────────────┐       │
-│  │ SQLite (state storage)     │       │
-│  │ aviation_agent.db (file)   │       │
+│  │ Azure Blob Storage (cache) │       │
+│  │ document-cache container   │       │
 │  └────────────────────────────┘       │
 └─────────────────────────────────────────┘
          ↓              ↓         
    ┌─────────┐   ┌─────────┐
-   │Azure AI │   │DRS API  │
-   │ Search  │   │(FAA)    │
+   │eCFR API │   │DRS API  │
+   │(gov.gov)│   │(FAA)    │
    └─────────┘   └─────────┘
          ↓
    ┌─────────┐
-   │Azure    │
-   │OpenAI   │
+   │Claude   │
+   │(Anthropic)│
    └─────────┘
+```
+
+### Planned Implementation (v2 - Multi-Turn)
+
+```
+┌──────────────────┐
+│   Web Browser    │ + sessionId tracking
+│   (Frontend)     │
+└────────┬─────────┘
+         │ HTTP + sessionId
+         ↓
+┌─────────────────────────────────────────┐
+│   Azure Static Web Apps                 │
+│                                         │
+│  ┌────────────────────────────────┐    │
+│  │   RAG Pipeline + Conversation  │    │
+│  │   ┌──────────┐  ┌───────────┐ │    │
+│  │   │  Load    │→ │ Classify  │ │    │
+│  │   │ History  │  │(+history) │ │    │
+│  │   └──────────┘  └───────────┘ │    │
+│  │         ↓            ↓        │    │
+│  │   ┌──────────┐  ┌───────────┐ │    │
+│  │   │Pre-fetch │  │Post-fetch │ │    │
+│  │   │ Clarity  │  │ Clarity   │ │    │
+│  │   └──────────┘  └───────────┘ │    │
+│  └────────────────────────────────┘    │
+│           ↓                            │
+│  ┌────────────────────────────┐       │
+│  │ Azure Blob Storage         │       │
+│  │ - document-cache/          │       │
+│  │ - conversations/{id}.json  │       │
+│  └────────────────────────────┘       │
+└─────────────────────────────────────────┘
 ```
 
 ---
 
 ## Technology Stack
 
-### Backend (Python)
-- **FastAPI** - API server + serves frontend static files
-- **LangGraph** - Agent orchestration and workflow management
-- **RAG Tool** - Azure AI Search wrapper (vector + semantic search)
-- **DRS Tool** - FAA Dynamic Regulatory System API integration
-- **SQLite** - Session state persistence (file-based, lives in backend)
-- **Azure OpenAI** - LLM (GPT-4) + embeddings (text-embedding-ada-002)
-- **Azure AI Search** - Vector database for indexed regulations
+### Current Implementation
 
-### Frontend (JavaScript)
+**Backend (TypeScript - Azure Functions)**
+- **Azure Functions v4** - Serverless API
+- **Azure Static Web Apps** - Hosting + managed functions
+- **Claude (Anthropic)** - LLM for classification + answer generation
+- **Azure Blob Storage** - Document and conversation caching
+- **eCFR API** - Live regulatory text
+- **DRS API** - FAA documents (ACs, ADs, TSOs, Orders)
+
+**Frontend (TypeScript)**
 - **React** - UI framework
-- **Vite** - Build tool and dev server
-- **Chat Interface** - Custom chat components
-- **Axios** - HTTP client for backend API calls
+- **Vite** - Build tool
+- **Zustand** - State management
+- **Custom chat components**
 
-### Key Libraries
+### Key Dependencies
 ```
-Backend:
-- langgraph
-- langchain-core
-- langchain-openai
+Backend (api/package.json):
+- @anthropic-ai/sdk
+- @azure/functions
+- @azure/storage-blob
+- pdf-parse
+
+Frontend (frontend/package.json):
+- react
+- vite
+- zustand
+```
+
+### Future Migration Options
+- **Azure OpenAI** - Replace Claude for consolidated Azure billing
+- **LangGraph** - If complex agent workflows needed
 - fastapi
 - uvicorn
 - azure-search-documents
@@ -187,52 +271,314 @@ aviation-rag-agent/                    # Single monorepo
 
 ## Agent Workflow
 
-### Enhanced Search Flow
+### Current Flow (v1 - Single Turn)
 
 ```
 User Query
     ↓
-Assess Clarity Node
-    ├─→ [Clarity Score < 0.6] → Ask Clarifying Questions → END (wait for user)
-    └─→ [Clarity Score ≥ 0.6] → Enhanced Search Node
-                                      ↓
-                                Search Indexed Content (RAG)
-                                      ↓
-                                Evaluate Confidence Score
-                                      ├─→ [Confidence > 0.7] → Return Answer from RAG
-                                      └─→ [Confidence ≤ 0.7] → Fallback to DRS
-                                                                    ↓
-                                                            Determine doc_type from context
-                                                                    ↓
-                                                            DRS API search & download
-                                                                    ↓
-                                                            Extract text from PDF
-                                                                    ↓
-                                                            Generate answer from DRS
-                                                                    ↓
-                                                            (Background: index for future)
+Quick Document Check (regex)
+    ├─→ [Direct doc request: "AC 23-8C"] → Fetch from DRS → Return
+    └─→ [Not direct] → Continue
+           ↓
+Classify Query (Claude)
+    ↓
+Parallel Fetch (eCFR + DRS)
+    ↓
+Generate Answer (Claude)
+    ↓
+Return with citations
 ```
 
-### Multi-Turn Conversation Example
+### Planned Flow (v2 - Multi-Turn with Two-Stage Clarity)
 
+```
+User Message
+    ↓
+Load Conversation History (Blob Storage)
+    ↓
+Classify Query (with history context)
+    ↓
+┌─────────────────────────────────────────────────────────┐
+│ STAGE 1: Pre-fetch Clarity Check                        │
+│                                                         │
+│   if (confidence < 0.7 || needsClarification) {        │
+│     → Generate clarifying question                      │
+│     → Save to history                                   │
+│     → Return { isClarifying: true }                    │
+│   }                                                     │
+└─────────────────────────────────────────────────────────┘
+    ↓ (passed Stage 1)
+Parallel Fetch (eCFR + DRS)
+    ↓
+┌─────────────────────────────────────────────────────────┐
+│ STAGE 2: Post-fetch Clarity Check                       │
+│                                                         │
+│   if (totalSources > MAX_SOURCES) {                    │
+│     → Generate narrowing question                       │
+│     → Save to history                                   │
+│     → Return { isClarifying: true }                    │
+│   }                                                     │
+└─────────────────────────────────────────────────────────┘
+    ↓ (passed Stage 2)
+Generate Answer (Claude, with history context)
+    ↓
+Save to history
+    ↓
+Return { answer, sources, isClarifying: false }
+```
+
+### Multi-Turn Conversation Examples
+
+**Example 1: Vague Query → Clarification (Stage 1)**
 ```
 Turn 1:
-User: "What are the requirements for wing modification?"
-Agent: "To provide precise guidance, I need to know:
-        1. Which certification part? (Part 23, 25, 27, 29)
-        2. What type of modification? (structural, avionics, etc.)"
-[END - waits for user response]
+User: "wing modification requirements"
+Classifier: { confidence: 0.5, needsClarification: true }
+Agent: "Which certification part applies? (Part 23, 25, 27, or 29)"
+       [isClarifying: true]
 
 Turn 2:
-User: "Part 23, structural"
-Agent: [Searches with context: "Part 23 structural wing modification"]
-       "For Part 23 structural wing modifications, you must comply with:
-        
-        1. 14 CFR 23.629 - Aeroelastic stability requirements
-        2. 14 CFR 23.573 - Damage tolerance and fatigue evaluation
-        
-        Reference: AC 23-13A (Structural Test Guidance)..."
+User: "Part 23 structural"
+Classifier: { confidence: 0.9, cfrParts: [23], topics: ["structural"] }
+Agent: "For Part 23 structural modifications, per § 23.2240..."
+       [sources: ["14 CFR § 23.2240", "AC 23-8C"]]
 ```
+
+**Example 2: Broad Query → Narrowing (Stage 2)**
+```
+Turn 1:
+User: "Part 23 flight characteristics requirements"
+Classifier: { confidence: 0.85, cfrParts: [23] }
+Fetch: Returns 15 CFR sections
+Agent: "I found 15 sections on Part 23 flight characteristics. 
+        Which area are you interested in?
+        - Stall speed/characteristics
+        - Takeoff/landing performance
+        - Controllability/stability"
+       [isClarifying: true]
+
+Turn 2:
+User: "stall characteristics"
+Agent: "Per § 23.2150, stall characteristics must..."
+       [sources: ["14 CFR § 23.2150"]]
+```
+
+**Example 3: Follow-up Questions**
+```
+Turn 1:
+User: "What are stall speed requirements for Part 23?"
+Agent: "Per § 23.2150, stall speed..." [sources: § 23.2150]
+
+Turn 2:
+User: "What about Part 25?"
+Classifier sees history → { cfrParts: [25], topics: ["stall_speed"] }
+Agent: "For Part 25, stall speed is defined in § 25.103..."
+
+Turn 3:
+User: "Which AC covers flight testing for this?"
+Classifier sees history → knows "this" = Part 25 stall speed
+Agent: "AC 25-7D covers flight test procedures including stall testing..."
+```
+
+---
+
+## Multi-Turn Conversation Implementation
+
+### Conversation Storage
+
+Conversations stored in Azure Blob Storage with 7-day TTL:
+
+```
+document-cache/
+  conversations/
+    {sessionId}.json
+```
+
+### Data Schema
+
+```typescript
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+  metadata?: {
+    classification?: QueryClassification;
+    sources?: string[];
+    isClarifying?: boolean;
+  };
+}
+
+interface Conversation {
+  sessionId: string;
+  messages: Message[];
+  createdAt: string;
+  lastActivity: string;
+}
+```
+
+### Enhanced Classifier Schema
+
+```typescript
+interface QueryClassification {
+  // Existing fields
+  intent: 'regulatory_lookup' | 'compliance_guidance' | 'document_request' | 'general_question';
+  topics: string[];
+  cfrParts: number[];
+  cfrSections: string[];
+  documentTypes: ('AC' | 'AD' | 'TSO' | 'Order')[];
+  confidence: number;
+  
+  // New fields for clarification
+  needsClarification: boolean;
+  missingInfo?: ('part' | 'section' | 'docType' | 'context')[];
+  clarifyingQuestion?: string;
+}
+```
+
+### API Changes
+
+```typescript
+// Request
+POST /api/ask
+{
+  question: string;
+  sessionId?: string;  // Omit for new conversation
+}
+
+// Response
+{
+  answer: string;
+  sources: string[];
+  sourceCount: number;
+  sessionId: string;      // Always returned
+  isClarifying: boolean;  // True if agent is asking a question
+  ecfrUsed?: boolean;
+  cfrSources?: CFRSource[];
+}
+```
+
+### Two-Stage Clarity Check Implementation
+
+```typescript
+const MIN_CONFIDENCE = 0.7;
+const MAX_SOURCES = 8;
+
+async function askQuestion(question: string, sessionId?: string) {
+  // Load or create conversation
+  const conversation = sessionId 
+    ? await loadConversation(sessionId)
+    : createConversation();
+  
+  // Add user message to history
+  conversation.messages.push({ role: 'user', content: question, timestamp: now() });
+  
+  // Classify with history context
+  const history = formatHistoryForClassifier(conversation.messages);
+  const classification = await classifyQuery(question, history);
+  
+  // STAGE 1: Pre-fetch clarity check
+  if (classification.confidence < MIN_CONFIDENCE || classification.needsClarification) {
+    const clarifyingQuestion = classification.clarifyingQuestion 
+      || generateClarifyingQuestion(classification.missingInfo);
+    
+    conversation.messages.push({ 
+      role: 'assistant', 
+      content: clarifyingQuestion,
+      metadata: { isClarifying: true }
+    });
+    await saveConversation(conversation);
+    
+    return { answer: clarifyingQuestion, isClarifying: true, sessionId: conversation.sessionId };
+  }
+  
+  // Fetch sources
+  const [ecfrDocs, drsDocs] = await Promise.all([
+    fetchFromECFR(classification),
+    fetchFromDRS(question, classification)
+  ]);
+  const totalSources = ecfrDocs.length + drsDocs.length;
+  
+  // STAGE 2: Post-fetch clarity check
+  if (totalSources > MAX_SOURCES) {
+    const narrowingQuestion = generateNarrowingQuestion(classification.topics, ecfrDocs);
+    
+    conversation.messages.push({
+      role: 'assistant',
+      content: narrowingQuestion,
+      metadata: { isClarifying: true }
+    });
+    await saveConversation(conversation);
+    
+    return { answer: narrowingQuestion, isClarifying: true, sessionId: conversation.sessionId };
+  }
+  
+  // Generate answer with history context
+  const answer = await generateAnswer(question, ecfrDocs, drsDocs, conversation.messages);
+  
+  conversation.messages.push({
+    role: 'assistant',
+    content: answer,
+    metadata: { sources: [...], isClarifying: false }
+  });
+  await saveConversation(conversation);
+  
+  return { answer, sources: [...], isClarifying: false, sessionId: conversation.sessionId };
+}
+```
+
+### Conversation TTL (7 days)
+
+```typescript
+async function loadConversation(sessionId: string): Promise<Conversation | null> {
+  const conversation = await blobStorage.get(`conversations/${sessionId}.json`);
+  
+  if (!conversation) return null;
+  
+  // Check TTL
+  const age = Date.now() - new Date(conversation.lastActivity).getTime();
+  const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+  
+  if (age > maxAge) {
+    await blobStorage.delete(`conversations/${sessionId}.json`);
+    return null;
+  }
+  
+  return conversation;
+}
+```
+
+### Frontend Changes
+
+```typescript
+// Store sessionId in localStorage
+const [sessionId, setSessionId] = useState<string | null>(
+  localStorage.getItem('faa-session-id')
+);
+
+// Send with requests
+const response = await api.ask(question, sessionId);
+setSessionId(response.sessionId);
+localStorage.setItem('faa-session-id', response.sessionId);
+
+// New conversation button
+function startNewConversation() {
+  localStorage.removeItem('faa-session-id');
+  setSessionId(null);
+  clearMessages();
+}
+```
+
+### Implementation Estimate
+
+| Component | Effort |
+|-----------|--------|
+| Conversation storage (Blob) | 1 hour |
+| API changes (sessionId) | 1 hour |
+| Classifier enhancement | 2 hours |
+| Two-stage clarity logic | 2 hours |
+| Frontend session handling | 2 hours |
+| Testing & edge cases | 2 hours |
+| **Total** | **~10 hours** |
 
 ---
 

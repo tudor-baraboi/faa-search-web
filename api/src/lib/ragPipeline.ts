@@ -12,6 +12,43 @@ import { classifyQuery, QueryClassification, quickClassifyDocumentRequest } from
 import { ECFRClient, ECFRSection, getECFRClient } from "./ecfrClient";
 import { DocumentCache, getDocumentCache } from "./documentCache";
 
+/**
+ * DRS Search Configuration
+ * Controls how many documents are fetched based on CFR classification
+ */
+const DRS_CONFIG = {
+  maxCfrQueries: parseInt(process.env.DRS_MAX_CFR_QUERIES || '3'),
+  maxDocTypes: parseInt(process.env.DRS_MAX_DOC_TYPES || '2'),
+  maxResultsPerSearch: parseInt(process.env.DRS_MAX_RESULTS_PER_SEARCH || '1'),
+  maxTotalDocuments: parseInt(process.env.DRS_MAX_TOTAL_DOCUMENTS || '4'),
+};
+
+/**
+ * Build DRS search queries from CFR classification
+ * Prioritizes sections (more specific) over parts (broader)
+ */
+function buildCFRSearchQueries(classification: QueryClassification): string[] {
+  const queries: string[] = [];
+  
+  // Sections are most specific (e.g., "23.2150")
+  if (classification.cfrSections) {
+    for (const section of classification.cfrSections) {
+      if (queries.length >= DRS_CONFIG.maxCfrQueries) break;
+      queries.push(section);
+    }
+  }
+  
+  // Parts are broader (e.g., "Part 23")
+  if (classification.cfrParts) {
+    for (const part of classification.cfrParts) {
+      if (queries.length >= DRS_CONFIG.maxCfrQueries) break;
+      queries.push(`Part ${part}`);
+    }
+  }
+  
+  return queries;
+}
+
 export class AircraftCertificationRAG {
   private searchClient: SearchClient<SearchDocument>;
   private anthropic: Anthropic;
@@ -310,41 +347,103 @@ Please answer based on the FAA regulations and guidance materials provided above
 
   /**
    * Fetch DRS documents based on classification
+   * Enhanced: Searches for documents related to CFR parts/sections
    */
   private async fetchFromDRSByClassification(
     question: string,
     classification: QueryClassification | null
   ): Promise<Document[]> {
-    if (!classification || !classification.documentTypes || classification.documentTypes.length === 0) {
+    if (!classification) {
       return [];
     }
     
     const drsClient = new DRSClient();
     const documents: Document[] = [];
+    const fetchedDocNumbers = new Set<string>(); // Deduplication
     
-    // Extract specific document references from the question
+    // Helper to add document with deduplication and limit check
+    const addDocument = (doc: { title: string; chunk: string; score: number }, docNumber: string): boolean => {
+      if (fetchedDocNumbers.has(docNumber) || documents.length >= DRS_CONFIG.maxTotalDocuments) {
+        return false;
+      }
+      fetchedDocNumbers.add(docNumber);
+      documents.push(doc);
+      return true;
+    };
+    
+    // 1. Extract specific document references from the question (highest priority)
     const docRefs = this.extractDocumentReferences(question);
     
     for (const ref of docRefs) {
+      if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+      
       const result = await drsClient.fetchDocumentWithCache(ref.docNumber, ref.docType);
       if (result) {
-        // Truncate for context window
         const maxChars = 50000;
         const truncatedText = result.text.length > maxChars
           ? result.text.substring(0, maxChars) + "\n\n[Document truncated due to length...]"
           : result.text;
           
-        documents.push({
+        addDocument({
           title: result.doc.title,
           chunk: truncatedText,
           score: 1.0
-        });
+        }, ref.docNumber);
       }
     }
     
-    // If no specific refs but classification indicates document types, do keyword search
-    if (documents.length === 0 && classification.documentTypes.length > 0) {
-      for (const docType of classification.documentTypes.slice(0, 2)) { // Limit to 2 types
+    // 2. NEW: Search for documents related to CFR parts/sections from classifier
+    const cfrQueries = buildCFRSearchQueries(classification);
+    const docTypes = (classification.documentTypes || ['AC']).slice(0, DRS_CONFIG.maxDocTypes);
+    
+    if (cfrQueries.length > 0 && documents.length < DRS_CONFIG.maxTotalDocuments) {
+      console.log(`📚 CFR→DRS mapping: searching ${cfrQueries.length} queries × ${docTypes.length} types`);
+      
+      for (const query of cfrQueries) {
+        if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+        
+        for (const docType of docTypes) {
+          if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+          
+          try {
+            console.log(`  🔍 Searching DRS: "${query}" in ${docType}`);
+            const searchResults = await drsClient.searchDocuments(query, docType);
+            const topResults = searchResults.slice(0, DRS_CONFIG.maxResultsPerSearch);
+            
+            for (const result of topResults) {
+              if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+              if (!result?.mainDocumentDownloadURL || !result?.documentNumber) continue;
+              if (fetchedDocNumbers.has(result.documentNumber)) continue;
+              
+              const fetched = await drsClient.fetchDocumentWithCache(
+                result.documentNumber,
+                docType
+              );
+              
+              if (fetched) {
+                const maxChars = 30000;
+                addDocument({
+                  title: fetched.doc.title,
+                  chunk: fetched.text.substring(0, maxChars),
+                  score: 0.85
+                }, result.documentNumber);
+                console.log(`  ✅ Found: ${fetched.doc.title}`);
+              }
+            }
+          } catch (error) {
+            console.warn(`  ⚠️ DRS search for "${query}" in ${docType} failed:`, error);
+          }
+        }
+      }
+    }
+    
+    // 3. Fallback: keyword search if no CFR queries and no specific refs found docs
+    if (documents.length === 0 && classification.documentTypes && classification.documentTypes.length > 0) {
+      console.log(`📚 DRS fallback: keyword search with question text`);
+      
+      for (const docType of classification.documentTypes.slice(0, DRS_CONFIG.maxDocTypes)) {
+        if (documents.length >= DRS_CONFIG.maxTotalDocuments) break;
+        
         try {
           const searchResults = await drsClient.searchDocuments(question, docType);
           const topResult = searchResults[0];
@@ -355,20 +454,20 @@ Please answer based on the FAA regulations and guidance materials provided above
             );
             if (result) {
               const maxChars = 30000;
-              documents.push({
+              addDocument({
                 title: result.doc.title,
                 chunk: result.text.substring(0, maxChars),
                 score: 0.9
-              });
-              break; // One document per type is enough
+              }, topResult.documentNumber);
             }
           }
         } catch (error) {
-          console.warn(`⚠️ DRS search for ${docType} failed:`, error);
+          console.warn(`⚠️ DRS fallback search for ${docType} failed:`, error);
         }
       }
     }
     
+    console.log(`📚 DRS fetch complete: ${documents.length} documents (limit: ${DRS_CONFIG.maxTotalDocuments})`);
     return documents;
   }
 

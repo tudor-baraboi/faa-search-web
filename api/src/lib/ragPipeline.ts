@@ -394,7 +394,10 @@ Please answer based on the FAA regulations and guidance materials provided above
     
     // 2. NEW: Search for documents related to CFR parts/sections from classifier
     const cfrQueries = buildCFRSearchQueries(classification);
-    const docTypes = (classification.documentTypes || ['AC']).slice(0, DRS_CONFIG.maxDocTypes);
+    // Default to AC if no document types specified (ACs provide compliance guidance for CFRs)
+    const docTypes = (classification.documentTypes && classification.documentTypes.length > 0)
+      ? classification.documentTypes.slice(0, DRS_CONFIG.maxDocTypes)
+      : ['AC'];
     
     if (cfrQueries.length > 0 && documents.length < DRS_CONFIG.maxTotalDocuments) {
       console.log(`📚 CFR→DRS mapping: searching ${cfrQueries.length} queries × ${docTypes.length} types`);

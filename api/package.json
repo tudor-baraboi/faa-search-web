@@ -2,7 +2,7 @@
   "name": "faa-search-api",
   "version": "1.0.0",
   "description": "FAA Search API - Azure Functions backend",
-  "main": "dist/src/index.js",
+  "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",

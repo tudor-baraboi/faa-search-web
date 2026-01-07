@@ -3,19 +3,26 @@ import "./polyfills";
 
 import { SearchClient } from "@azure/search-documents";
 import Anthropic from "@anthropic-ai/sdk";
-import { Document, RAGResponse, SearchDocument } from "./types";
+import { Document, RAGResponse, SearchDocument, CFRSource, DRSSource } from "./types";
 import { createSearchClient } from "./azureSearch";
 import { createAnthropicClient } from "./anthropic";
 import { DRSClient } from "./drsClient";
 import { evaluateSearchResults, extractDocumentType, SearchDocument as EvalSearchDocument } from "./searchEvaluator";
+import { classifyQuery, QueryClassification, quickClassifyDocumentRequest } from "./queryClassifier";
+import { ECFRClient, ECFRSection, getECFRClient } from "./ecfrClient";
+import { DocumentCache, getDocumentCache } from "./documentCache";
 
 export class AircraftCertificationRAG {
   private searchClient: SearchClient<SearchDocument>;
   private anthropic: Anthropic;
+  private ecfrClient: ECFRClient;
+  private cache: DocumentCache;
 
   constructor() {
     this.searchClient = createSearchClient();
     this.anthropic = createAnthropicClient();
+    this.ecfrClient = getECFRClient();
+    this.cache = getDocumentCache();
   }
 
   /**
@@ -102,68 +109,95 @@ export class AircraftCertificationRAG {
   }
 
   /**
-   * Main RAG pipeline: retrieve + generate answer
-   * Enhanced with DRS fallback when Azure Search results are insufficient
+   * Main RAG pipeline: classify → parallel fetch → generate answer
+   * Now uses intelligent query classification and eCFR integration
    */
   async askQuestion(question: string): Promise<RAGResponse> {
-    // Step 1: Retrieve relevant documents from Azure Search
-    let documents: Document[];
-    let searchError: string | undefined;
-    let fallbackUsed = false;
-
-    try {
-      documents = await this.searchFAARegulations(question);
-    } catch (error) {
-      searchError = error instanceof Error ? error.message : String(error);
-      console.error("Search failed with error:", searchError);
-      documents = [];
+    // Step 1: Check for quick document requests (e.g., "show me AC 23-8C")
+    const quickDoc = quickClassifyDocumentRequest(question);
+    if (quickDoc) {
+      return this.handleDirectDocumentRequest(quickDoc.docType, quickDoc.docNumber);
     }
 
-    // Step 2: Evaluate search quality and potentially fallback to DRS
-    const evalDocs: EvalSearchDocument[] = documents.map(d => ({
-      title: d.title,
-      score: d.score,
-      chunk: d.chunk
-    }));
+    // Step 2: Classify the query to understand intent and route to correct sources
+    let classification: QueryClassification | null = null;
+    let classificationUsed = false;
+    
+    try {
+      console.log('🧠 Classifying query...');
+      classification = await classifyQuery(question, this.anthropic);
+      classificationUsed = true;
+      console.log(`📋 Classification: intent=${classification.intent}, cfrParts=${classification.cfrParts?.join(',') || 'none'}, docTypes=${classification.documentTypes?.join(',') || 'none'}`);
+    } catch (error) {
+      console.warn('⚠️ Classification failed, using fallback logic:', error);
+    }
 
-    const quality = evaluateSearchResults(evalDocs, question);
-    console.log(`📊 Search quality: ${quality.reason} (score: ${quality.score.toFixed(2)})`);
+    // Step 3: Parallel fetch from multiple sources based on classification
+    const [ecfrDocs, drsDocs, searchDocs] = await Promise.all([
+      this.fetchFromECFR(classification),
+      this.fetchFromDRSByClassification(question, classification),
+      this.searchFAARegulations(question).catch(err => {
+        console.warn('⚠️ Azure Search failed:', err);
+        return [] as Document[];
+      })
+    ]);
 
-    if (!quality.isSufficient) {
-      console.log('🔄 Azure Search insufficient, attempting DRS fallback...');
+    // Combine all documents, prioritizing by source authority
+    let allDocs: Document[] = [];
+    const cfrSources: CFRSource[] = [];
+    const drsSources: DRSSource[] = [];
+    
+    // eCFR sections (highest authority for regulations)
+    for (const section of ecfrDocs) {
+      allDocs.push({
+        title: `14 CFR § ${section.part}.${section.section} - ${section.sectionTitle}`,
+        chunk: section.content,
+        score: 1.0
+      });
+      cfrSources.push({
+        title: 14,
+        part: section.part,
+        section: section.section,
+        sectionTitle: section.sectionTitle,
+        url: section.url
+      });
+    }
+    
+    // DRS documents (high authority for ACs, ADs)
+    allDocs = allDocs.concat(drsDocs);
+    
+    // Azure Search results (supplement)
+    if (searchDocs.length > 0 && ecfrDocs.length === 0 && drsDocs.length === 0) {
+      // Only use search results if we didn't get specific documents
+      allDocs = allDocs.concat(searchDocs);
+    }
 
-      try {
-        const drsResult = await this.fetchFromDRS(question, quality.specificDocMentioned);
-
-        if (drsResult) {
-          documents = drsResult.documents;
-          fallbackUsed = true;
-          console.log(`✅ DRS fallback successful: ${documents.length} document(s) retrieved`);
-        }
-      } catch (drsError) {
-        console.error('❌ DRS fallback failed:', drsError);
-        // Continue with whatever Azure Search results we have
+    // Step 4: Handle no results
+    if (allDocs.length === 0) {
+      // Last resort: try legacy DRS fallback
+      console.log('🔄 No documents found, attempting legacy DRS fallback...');
+      const legacyResult = await this.fetchFromDRS(question);
+      if (legacyResult) {
+        allDocs = legacyResult.documents;
       }
     }
 
-    if (documents.length === 0) {
+    if (allDocs.length === 0) {
       return {
-        answer: searchError
-          ? `Search failed: ${searchError}`
-          : "I couldn't find relevant information in the FAA regulations and guidance materials. The document may not be available in our index or the FAA DRS system.",
+        answer: "I couldn't find relevant information in the FAA regulations, eCFR, or guidance materials. Please try rephrasing your question or specifying a regulation section number.",
         sources: [],
         sourceCount: 0,
         context: "",
-        error: searchError,
-        fallbackUsed
+        ecfrUsed: ecfrDocs.length > 0,
+        classificationUsed
       };
     }
 
-    // Step 3: Format context
-    const context = this.formatContext(documents);
+    // Step 5: Format context
+    const context = this.formatContext(allDocs);
 
-    // Step 4: Create prompt for Claude
-    const systemPrompt = this.buildSystemPrompt(fallbackUsed);
+    // Step 6: Generate answer with Claude
+    const systemPrompt = this.buildEnhancedSystemPrompt(ecfrDocs.length > 0, drsDocs.length > 0);
 
     const userMessage = `${context}
 
@@ -171,7 +205,6 @@ User Question: ${question}
 
 Please answer based on the FAA regulations and guidance materials provided above.`;
 
-    // Step 5: Call Claude
     console.log("🤖 Generating answer with Claude...");
 
     try {
@@ -179,21 +212,20 @@ Please answer based on the FAA regulations and guidance materials provided above
         model: "claude-sonnet-4-20250514",
         max_tokens: 2048,
         system: systemPrompt,
-        messages: [
-          { role: "user", content: userMessage }
-        ]
+        messages: [{ role: "user", content: userMessage }]
       });
 
       const answer = response.content[0].type === "text" ? response.content[0].text : "";
 
-      // Step 6: Return answer with sources
       return {
         answer,
-        sources: documents.map(doc => doc.title),
-        sourceCount: documents.length,
+        sources: allDocs.map(doc => doc.title),
+        sourceCount: allDocs.length,
         context,
-        error: undefined,
-        fallbackUsed
+        ecfrUsed: ecfrDocs.length > 0,
+        fallbackUsed: drsDocs.length > 0 && searchDocs.length === 0,
+        cfrSources: cfrSources.length > 0 ? cfrSources : undefined,
+        classificationUsed
       };
     } catch (error) {
       console.error("Error generating answer:", error);
@@ -203,9 +235,167 @@ Please answer based on the FAA regulations and guidance materials provided above
         sourceCount: 0,
         context: "",
         error: `Error generating answer: ${error instanceof Error ? error.message : String(error)}`,
-        fallbackUsed
+        classificationUsed
       };
     }
+  }
+
+  /**
+   * Handle direct document requests like "show me AC 23-8C"
+   */
+  private async handleDirectDocumentRequest(docType: string, docNumber: string): Promise<RAGResponse> {
+    console.log(`📄 Direct document request: ${docType} ${docNumber}`);
+    
+    const drsClient = new DRSClient();
+    const result = await drsClient.fetchDocumentWithCache(docNumber, docType);
+    
+    if (!result) {
+      return {
+        answer: `I couldn't find ${docType} ${docNumber} in the FAA DRS system. Please verify the document number and try again.`,
+        sources: [],
+        sourceCount: 0,
+        context: "",
+        fallbackUsed: true
+      };
+    }
+
+    const context = `## Source: ${result.doc.title}\n\n${result.text}`;
+    
+    return {
+      answer: `Here is ${docType} ${docNumber}:\n\n${result.text.substring(0, 5000)}${result.text.length > 5000 ? '\n\n[Document truncated...]' : ''}`,
+      sources: [result.doc.title],
+      sourceCount: 1,
+      context,
+      fallbackUsed: true,
+      drsSources: [{
+        docType,
+        docNumber,
+        title: result.doc.title
+      }]
+    };
+  }
+
+  /**
+   * Fetch eCFR sections based on classification
+   */
+  private async fetchFromECFR(classification: QueryClassification | null): Promise<ECFRSection[]> {
+    if (!classification) return [];
+    
+    const sections: ECFRSection[] = [];
+    
+    // Fetch specific sections mentioned in classification
+    if (classification.cfrSections && classification.cfrSections.length > 0) {
+      for (const sectionRef of classification.cfrSections) {
+        // Parse section reference like "23.2150" or "25.1309"
+        const match = sectionRef.match(/(\d+)\.(\d+)/);
+        if (match) {
+          const part = parseInt(match[1]);
+          const section = match[2];
+          
+          try {
+            // Title 14 is always aviation (14 CFR)
+            const ecfrSection = await this.ecfrClient.fetchSection(14, part, section);
+            if (ecfrSection) {
+              sections.push(ecfrSection);
+            }
+          } catch (error) {
+            console.warn(`⚠️ Failed to fetch eCFR § ${part}.${section}:`, error);
+          }
+        }
+      }
+    }
+    
+    return sections;
+  }
+
+  /**
+   * Fetch DRS documents based on classification
+   */
+  private async fetchFromDRSByClassification(
+    question: string,
+    classification: QueryClassification | null
+  ): Promise<Document[]> {
+    if (!classification || !classification.documentTypes || classification.documentTypes.length === 0) {
+      return [];
+    }
+    
+    const drsClient = new DRSClient();
+    const documents: Document[] = [];
+    
+    // Extract specific document references from the question
+    const docRefs = this.extractDocumentReferences(question);
+    
+    for (const ref of docRefs) {
+      const result = await drsClient.fetchDocumentWithCache(ref.docNumber, ref.docType);
+      if (result) {
+        // Truncate for context window
+        const maxChars = 50000;
+        const truncatedText = result.text.length > maxChars
+          ? result.text.substring(0, maxChars) + "\n\n[Document truncated due to length...]"
+          : result.text;
+          
+        documents.push({
+          title: result.doc.title,
+          chunk: truncatedText,
+          score: 1.0
+        });
+      }
+    }
+    
+    // If no specific refs but classification indicates document types, do keyword search
+    if (documents.length === 0 && classification.documentTypes.length > 0) {
+      for (const docType of classification.documentTypes.slice(0, 2)) { // Limit to 2 types
+        try {
+          const searchResults = await drsClient.searchDocuments(question, docType);
+          if (searchResults.length > 0 && searchResults[0].mainDocumentDownloadURL) {
+            const result = await drsClient.fetchDocumentWithCache(
+              searchResults[0].documentNumber, 
+              docType
+            );
+            if (result) {
+              const maxChars = 30000;
+              documents.push({
+                title: result.doc.title,
+                chunk: result.text.substring(0, maxChars),
+                score: 0.9
+              });
+              break; // One document per type is enough
+            }
+          }
+        } catch (error) {
+          console.warn(`⚠️ DRS search for ${docType} failed:`, error);
+        }
+      }
+    }
+    
+    return documents;
+  }
+
+  /**
+   * Extract document references from question text
+   */
+  private extractDocumentReferences(question: string): Array<{ docType: string; docNumber: string }> {
+    const refs: Array<{ docType: string; docNumber: string }> = [];
+    
+    // AC pattern: AC 23-8C, AC23-8, etc.
+    const acMatches = question.matchAll(/AC\s*(\d+[A-Z]?[-.]?\d*[A-Z]*)/gi);
+    for (const match of acMatches) {
+      refs.push({ docType: 'AC', docNumber: match[1] });
+    }
+    
+    // AD pattern: AD 2024-01-02
+    const adMatches = question.matchAll(/AD\s*(\d{4}[-]\d{2}[-]\d{2})/gi);
+    for (const match of adMatches) {
+      refs.push({ docType: 'AD', docNumber: match[1] });
+    }
+    
+    // TSO pattern: TSO-C129
+    const tsoMatches = question.matchAll(/TSO[-]?([A-Z]?\d+[A-Z]?)/gi);
+    for (const match of tsoMatches) {
+      refs.push({ docType: 'TSO', docNumber: match[1] });
+    }
+    
+    return refs;
   }
 
   /**
@@ -238,6 +428,44 @@ Note: The provided document was retrieved directly from the FAA Dynamic Regulato
     }
 
     return basePrompt;
+  }
+
+  /**
+   * Enhanced system prompt that notes eCFR and DRS sources
+   */
+  private buildEnhancedSystemPrompt(hasECFR: boolean, hasDRS: boolean): string {
+    let prompt = `You are an FAA aircraft certification expert with deep knowledge of aviation regulations and guidance materials.
+
+Your role is to answer questions based ONLY on the provided FAA regulations, advisory circulars, and guidance documents.
+
+Rules:
+1. ALWAYS cite specific regulation sections (e.g., "14 CFR § 23.2150") or advisory circular numbers when answering
+2. If the regulations don't address the question, say so explicitly  
+3. Never make up information not in the provided documents
+4. Be precise about requirements, compliance methods, and specifications
+5. If there's ambiguity or multiple acceptable compliance methods, mention them
+6. When appropriate, distinguish between:
+   - Regulatory requirements (14 CFR sections)
+   - Advisory guidance (ACs, policy memos)
+   - Acceptable means of compliance
+7. If a question involves certification basis or applicability, be specific about which part (Part 23, 25, 27, 29, etc.)
+8. Suggest consulting with local FAA Aircraft Certification Office (ACO) or Designated Engineering Representative (DER) when regulations allow for interpretation or require coordination
+
+Answer questions clearly and professionally, as if advising an aircraft manufacturer, engineering team, or certification applicant.`;
+
+    if (hasECFR) {
+      prompt += `
+
+IMPORTANT: Some content is from the official Electronic Code of Federal Regulations (eCFR). This is the authoritative, current regulatory text. Always cite these as "14 CFR § X.XXX".`;
+    }
+
+    if (hasDRS) {
+      prompt += `
+
+Note: Some documents were retrieved from the FAA Dynamic Regulatory System (DRS), the official source for FAA advisory circulars and directives.`;
+    }
+
+    return prompt;
   }
 
   /**

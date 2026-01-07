@@ -1,4 +1,5 @@
 import pdf from 'pdf-parse';
+import { DocumentCache, getDocumentCache } from './documentCache';
 
 /**
  * DRS Document metadata from API (raw response uses drs: prefix)
@@ -64,10 +65,12 @@ function normalizeDRSDocument(raw: DRSDocumentRaw): DRSDocument {
 export class DRSClient {
   private baseURL: string;
   private apiKey: string;
+  private cache: DocumentCache;
 
   constructor() {
     this.baseURL = process.env.DRS_API_ENDPOINT || 'https://drs.faa.gov/api/drs';
     this.apiKey = process.env.DRS_API_KEY || '';
+    this.cache = getDocumentCache();
 
     if (!this.apiKey) {
       console.warn('⚠️  DRS_API_KEY not configured');
@@ -253,5 +256,71 @@ export class DRSClient {
       console.error(`❌ Error searching for ${docNumber}:`, error);
       return null;
     }
+  }
+
+  /**
+   * Cache-first document fetch with text extraction
+   * Returns cached text if available, otherwise fetches, extracts, and caches
+   * 
+   * @param docNumber Document number (e.g., "AC 23-8C")
+   * @param docType Document type (AC, AD, TSO, etc.)
+   * @returns Extracted text and metadata, or null if not found
+   */
+  async fetchDocumentWithCache(
+    docNumber: string,
+    docType: string
+  ): Promise<{ text: string; doc: DRSDocument } | null> {
+    const cacheKey = DocumentCache.drsKey(docType, docNumber);
+    
+    // Try cache first
+    const cached = await this.cache.get<{ text: string; doc: DRSDocument }>(cacheKey);
+    if (cached) {
+      console.log(`📦 DRS cache hit: ${docType}/${docNumber}`);
+      return cached.data;
+    }
+    
+    // Search for document
+    const doc = await this.searchByDocumentNumber(docNumber, docType);
+    if (!doc) {
+      console.log(`❌ Document not found: ${docType}/${docNumber}`);
+      return null;
+    }
+    
+    // Need download URL
+    if (!doc.mainDocumentDownloadURL) {
+      console.log(`❌ No download URL for: ${docType}/${docNumber}`);
+      return null;
+    }
+    
+    try {
+      // Download and extract
+      const pdfBuffer = await this.downloadDocument(doc.mainDocumentDownloadURL);
+      const text = await this.extractTextFromPDF(pdfBuffer);
+      
+      const result = { text, doc };
+      
+      // Cache the result
+      await this.cache.set(cacheKey, result, DocumentCache.DRS_TTL_HOURS);
+      
+      return result;
+      
+    } catch (error) {
+      console.error(`❌ Failed to fetch/extract ${docType}/${docNumber}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch multiple documents with caching (parallel)
+   * 
+   * @param requests Array of { docNumber, docType }
+   * @returns Array of results (null for failures)
+   */
+  async fetchDocumentsWithCache(
+    requests: Array<{ docNumber: string; docType: string }>
+  ): Promise<Array<{ text: string; doc: DRSDocument } | null>> {
+    return Promise.all(
+      requests.map(req => this.fetchDocumentWithCache(req.docNumber, req.docType))
+    );
   }
 }

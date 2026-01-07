@@ -1,10 +1,8 @@
 // Load polyfills first
 import "./polyfills";
 
-import { SearchClient } from "@azure/search-documents";
 import Anthropic from "@anthropic-ai/sdk";
-import { Document, RAGResponse, SearchDocument, CFRSource, DRSSource } from "./types";
-import { createSearchClient } from "./azureSearch";
+import { Document, RAGResponse, CFRSource, DRSSource } from "./types";
 import { createAnthropicClient } from "./anthropic";
 import { DRSClient } from "./drsClient";
 import { evaluateSearchResults, extractDocumentType, SearchDocument as EvalSearchDocument } from "./searchEvaluator";
@@ -52,83 +50,14 @@ function buildDRSKeywords(classification: QueryClassification): string[] {
 }
 
 export class AircraftCertificationRAG {
-  private searchClient: SearchClient<SearchDocument>;
   private anthropic: Anthropic;
   private ecfrClient: ECFRClient;
   private cache: DocumentCache;
 
   constructor() {
-    this.searchClient = createSearchClient();
     this.anthropic = createAnthropicClient();
     this.ecfrClient = getECFRClient();
     this.cache = getDocumentCache();
-  }
-
-  /**
-   * Search vector database for relevant FAA regulation sections
-   * Ported from Python: faa-search.py lines 87-122
-   */
-  async searchFAARegulations(query: string, topK: number = 3): Promise<Document[]> {
-    console.log(`🔍 Searching FAA regulations for: '${query}'`);
-
-    try {
-      // Try vector search first
-      console.log('  Attempting vector search...');
-      const vectorResults = await this.searchClient.search(query, {
-        vectorQueries: [
-          {
-            kind: "text",
-            text: query,
-            kNearestNeighborsCount: topK,
-            fields: ["text_vector"]
-          }
-        ],
-        select: ["chunk", "title"],
-        top: topK
-      } as any);
-
-      // Format results
-      const retrievedDocs: Document[] = [];
-      for await (const result of vectorResults.results) {
-        retrievedDocs.push({
-          chunk: result.document.chunk || "",
-          title: result.document.title || "Unknown",
-          score: result.score || 0
-        });
-      }
-
-      if (retrievedDocs.length > 0) {
-        console.log(`  ✓ Found ${retrievedDocs.length} relevant regulation sections via vector search`);
-        return retrievedDocs;
-      }
-
-      // Fallback to keyword search if vector search returns nothing
-      console.log('  Vector search returned 0 results, falling back to keyword search...');
-      const keywordResults = await this.searchClient.search(query, {
-        select: ["chunk", "title"],
-        top: topK
-      });
-
-      const keywordDocs: Document[] = [];
-      for await (const result of keywordResults.results) {
-        keywordDocs.push({
-          chunk: result.document.chunk || "",
-          title: result.document.title || "Unknown",
-          score: result.score || 0
-        });
-      }
-
-      console.log(`  ✓ Found ${keywordDocs.length} relevant regulation sections via keyword search`);
-      return keywordDocs;
-    } catch (error) {
-      console.error(`  ❌ Search error:`, error);
-      if (error instanceof Error) {
-        console.error(`  ❌ Error message: ${error.message}`);
-        console.error(`  ❌ Error stack: ${error.stack}`);
-      }
-      // Re-throw the error so we can see it in the response
-      throw error;
-    }
   }
 
   /**
@@ -171,14 +100,10 @@ export class AircraftCertificationRAG {
       console.warn('⚠️ Classification failed, using fallback logic:', error);
     }
 
-    // Step 3: Parallel fetch from multiple sources based on classification
-    const [ecfrDocs, drsDocs, searchDocs] = await Promise.all([
+    // Step 3: Parallel fetch from eCFR and DRS based on classification
+    const [ecfrDocs, drsDocs] = await Promise.all([
       this.fetchFromECFR(classification),
-      this.fetchFromDRSByClassification(question, classification),
-      this.searchFAARegulations(question).catch(err => {
-        console.warn('⚠️ Azure Search failed:', err);
-        return [] as Document[];
-      })
+      this.fetchFromDRSByClassification(question, classification)
     ]);
 
     // Combine all documents, prioritizing by source authority
@@ -204,12 +129,6 @@ export class AircraftCertificationRAG {
     
     // DRS documents (high authority for ACs, ADs)
     allDocs = allDocs.concat(drsDocs);
-    
-    // Azure Search results (supplement)
-    if (searchDocs.length > 0 && ecfrDocs.length === 0 && drsDocs.length === 0) {
-      // Only use search results if we didn't get specific documents
-      allDocs = allDocs.concat(searchDocs);
-    }
 
     // Step 4: Handle no results
     if (allDocs.length === 0) {
@@ -262,7 +181,6 @@ Please answer based on the FAA regulations and guidance materials provided above
         sourceCount: allDocs.length,
         context,
         ecfrUsed: ecfrDocs.length > 0,
-        fallbackUsed: drsDocs.length > 0 && searchDocs.length === 0,
         cfrSources: cfrSources.length > 0 ? cfrSources : undefined,
         classificationUsed
       };

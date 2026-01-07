@@ -6,12 +6,6 @@ export type { QueryClassification } from './queryClassifier';
 // Re-export from ecfrClient
 export type { ECFRSection, ECFRSearchResult } from './ecfrClient';
 
-// Azure Search document interface
-export interface SearchDocument {
-  chunk: string;
-  title: string;
-}
-
 export interface Document {
   chunk: string;
   title: string;
@@ -45,7 +39,6 @@ export interface RAGResponse {
   sourceCount: number;
   context: string;
   error?: string;
-  fallbackUsed?: boolean;     // True if DRS API was used instead of Azure Search
   ecfrUsed?: boolean;         // True if eCFR API was used
   cfrSources?: CFRSource[];   // CFR sections used in response
   drsSources?: DRSSource[];   // DRS documents used in response

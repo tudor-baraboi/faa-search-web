@@ -4,13 +4,9 @@ export async function health(request: HttpRequest, context: InvocationContext): 
   context.log(`Health check endpoint called`);
 
   const config = {
-    hasAzureSearchEndpoint: !!process.env.AZURE_SEARCH_ENDPOINT,
-    hasAzureSearchKey: !!process.env.AZURE_SEARCH_KEY,
-    hasAzureSearchIndex: !!process.env.AZURE_SEARCH_INDEX,
     hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
     hasDrsApiKey: !!process.env.DRS_API_KEY,
-    azureSearchEndpoint: process.env.AZURE_SEARCH_ENDPOINT || "NOT_SET",
-    azureSearchIndex: process.env.AZURE_SEARCH_INDEX || "NOT_SET",
+    hasBlobStorage: !!process.env.BLOB_STORAGE_CONNECTION_STRING,
     nodeVersion: process.version,
     platform: process.platform
   };

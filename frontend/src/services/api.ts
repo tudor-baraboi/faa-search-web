@@ -20,10 +20,14 @@ class FAASearchAPI {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.error || response.statusText || `HTTP ${response.status}`;
+        
         // Include status code in error message for rate limit detection
-        const errorMessage = errorData.error || `API error: ${response.statusText}`;
-        throw new Error(response.status === 429 ? `429 ${errorMessage}` : errorMessage);
+        if (response.status === 429) {
+          throw new Error(`429 Rate limit exceeded. Please wait before trying again.`);
+        }
+        throw new Error(errorMessage);
       }
 
       const data: RAGResponse = await response.json();

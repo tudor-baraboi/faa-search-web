@@ -1,42 +1,46 @@
-import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import { Context, HttpRequest } from "@azure/functions";
 import { AircraftCertificationRAG } from "../lib/ragPipeline";
 import { AskQuestionRequest, AskQuestionResponse } from "../lib/types";
 import { getConversationStore, ConversationTurn } from "../lib/conversationStore";
 
-export async function ask(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
-  context.log(`HTTP function processed request for url "${request.url}"`);
+const ask = async function (context: Context, req: HttpRequest): Promise<void> {
+  context.log(`HTTP function processed request for url "${req.url}"`);
 
   try {
-    // Parse request body
-    const body = await request.text();
+    // Parse request body - V3 model uses req.body directly
+    const body = req.body;
 
     if (!body) {
-      return {
+      context.res = {
         status: 400,
-        jsonBody: {
+        body: JSON.stringify({
           error: "Request body is required",
           answer: "",
           sources: [],
           sourceCount: 0,
           context: ""
-        }
+        }),
+        headers: { "Content-Type": "application/json" }
       };
+      return;
     }
 
-    const requestData: AskQuestionRequest = JSON.parse(body);
+    const requestData: AskQuestionRequest = typeof body === 'string' ? JSON.parse(body) : body;
 
     // Validate question
     if (!requestData.question || typeof requestData.question !== "string" || requestData.question.trim() === "") {
-      return {
+      context.res = {
         status: 400,
-        jsonBody: {
+        body: JSON.stringify({
           error: "Question is required and must be a non-empty string",
           answer: "",
           sources: [],
           sourceCount: 0,
           context: ""
-        }
+        }),
+        headers: { "Content-Type": "application/json" }
       };
+      return;
     }
 
     const question = requestData.question.trim();
@@ -102,31 +106,26 @@ export async function ask(request: HttpRequest, context: InvocationContext): Pro
       clarifyingQuestion: result.clarifyingQuestion
     };
 
-    return {
+    context.res = {
       status: 200,
-      headers: {
-        "Content-Type": "application/json"
-      },
-      jsonBody: response
+      body: JSON.stringify(response),
+      headers: { "Content-Type": "application/json" }
     };
   } catch (error) {
-    context.error("Error processing request:", error);
+    context.log.error("Error processing request:", error);
 
-    return {
+    context.res = {
       status: 500,
-      jsonBody: {
+      body: JSON.stringify({
         error: `Internal server error: ${error instanceof Error ? error.message : String(error)}`,
         answer: "",
         sources: [],
         sourceCount: 0,
         context: ""
-      }
+      }),
+      headers: { "Content-Type": "application/json" }
     };
   }
-}
+};
 
-app.http("ask", {
-  methods: ["POST"],
-  authLevel: "anonymous",
-  handler: ask
-});
+export default ask;

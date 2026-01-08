@@ -1,6 +1,6 @@
-import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import { Context, HttpRequest } from "@azure/functions";
 
-export async function health(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
+const health = async function (context: Context, req: HttpRequest): Promise<void> {
   context.log(`Health check endpoint called`);
 
   const config = {
@@ -11,14 +11,11 @@ export async function health(request: HttpRequest, context: InvocationContext): 
     platform: process.platform
   };
 
-  return {
+  context.res = {
     status: 200,
-    jsonBody: config
+    body: JSON.stringify(config),
+    headers: { "Content-Type": "application/json" }
   };
-}
+};
 
-app.http("health", {
-  methods: ["GET"],
-  authLevel: "anonymous",
-  handler: health
-});
+export default health;

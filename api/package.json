@@ -2,9 +2,8 @@
   "name": "faa-search-api",
   "version": "1.0.0",
   "description": "FAA Search API - Azure Functions backend",
-  "main": "dist/index.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   },
   "scripts": {
     "build": "tsc",
@@ -16,7 +15,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
-    "@azure/functions": "^4.0.0",
+    "@azure/functions": "^3.5.0",
     "@azure/storage-blob": "^12.17.0",
     "crypto-browserify": "^3.12.1",
     "pdf-parse": "^1.1.1",

@@ -1107,6 +1107,45 @@ Query: "stall speed compliance"
 
 2. **No new secrets needed** — uses `BLOB_STORAGE_CONNECTION_STRING` (or `AzureWebJobsStorage` locally)
 
+#### ⚠️ Azure Functions Deployment Troubleshooting
+
+**CRITICAL:** The deployment pipeline requires specific Azure configuration to work properly.
+
+**Required GitHub Secrets:**
+- `AZURE_STATIC_WEB_APPS_API_TOKEN_GRAY_WAVE_06AC23C1E` - For SWA frontend deployment
+- `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` - For Function App API deployment
+
+**To get/update the publish profile:**
+```bash
+az functionapp deployment list-publishing-profiles \
+  --name faa-search-api \
+  --resource-group ML_Resource_Group \
+  --xml > publish-profile.xml
+
+gh secret set AZURE_FUNCTIONAPP_PUBLISH_PROFILE < publish-profile.xml
+```
+
+**Required Azure Function App Settings:**
+1. **Disable EasyAuth** - EasyAuth on the Function App blocks GitHub Actions deployment:
+   ```bash
+   az rest --method PUT --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Web/sites/<app>/config/authsettingsV2?api-version=2022-03-01" --body '{"properties":{"platform":{"enabled":false}}}'
+   ```
+
+2. **Enable basic auth for SCM** (required for publish profile):
+   ```bash
+   az resource update --ids /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Web/sites/<app>/basicPublishingCredentialsPolicies/scm --set properties.allow=true
+   ```
+
+3. **Remove WEBSITE_RUN_FROM_PACKAGE** if set to a URL (conflicts with zip deploy):
+   ```bash
+   az functionapp config appsettings delete --name <app> --resource-group <rg> --setting-names WEBSITE_RUN_FROM_PACKAGE
+   ```
+
+**How to manually trigger deployment:**
+```bash
+gh workflow run "Deploy Azure Functions API" --repo <owner>/<repo>
+```
+
 #### ⚠️ Production Caching Verification Checklist
 
 **CRITICAL:** Always verify caching is working in production after deployment. The cache significantly improves response quality and latency.

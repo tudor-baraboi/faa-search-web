@@ -371,13 +371,20 @@ Please answer based on the FAA regulations and guidance materials provided above
       };
     } catch (error) {
       console.error("Error generating answer:", error);
+      
+      // Re-throw rate limit errors so the HTTP handler can return 429
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('429') || errorMessage.includes('rate_limit') || errorMessage.includes('rate limit')) {
+        throw error;
+      }
+      
       return {
         answer: "",
         sources: [],
         sourceCount: 0,
         context: "",
         sessionId,
-        error: `Error generating answer: ${error instanceof Error ? error.message : String(error)}`,
+        error: `Error generating answer: ${errorMessage}`,
         classificationUsed
       };
     }

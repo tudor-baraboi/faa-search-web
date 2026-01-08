@@ -19,6 +19,7 @@
     "@azure/functions": "^4.5.1",
     "@azure/search-documents": "^12.2.0",
     "@azure/storage-blob": "^12.17.0",
+    "@azure/storage-queue": "^12.18.0",
     "crypto-browserify": "^3.12.1",
     "pdf-parse": "^1.1.1",
     "uuid": "^13.0.0"

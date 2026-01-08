@@ -12,6 +12,7 @@ import { DocumentCache, getDocumentCache } from "./documentCache";
 import { getConversationStore } from "./conversationStore";
 import { hybridSearch, indexDocuments, ensureIndexExists, hasVectorSearch, FADocument, getIndexedDocumentNumbers } from "./vectorSearch";
 import { hasEmbeddingService } from "./embeddings";
+import { enqueueForIndexing, hasIndexQueue } from "./indexQueue";
 
 /**
  * DRS Search Configuration
@@ -457,7 +458,10 @@ Please answer based on the FAA regulations and guidance materials provided above
    * Even when vector search succeeds, check DRS metadata for new documents
    * to incrementally build the index over multiple queries.
    * 
-   * @returns Array of newly fetched documents (to include in current response)
+   * LAZY MODE: With queue enabled, enqueue documents for background processing
+   * instead of downloading inline. This reduces request latency significantly.
+   * 
+   * @returns Array of newly fetched documents (empty in lazy mode - docs indexed async)
    */
   private async fetchNewDocumentsProgressively(
     classification: QueryClassification
@@ -467,7 +471,6 @@ Please answer based on the FAA regulations and guidance materials provided above
     }
 
     const drsClient = new DRSClient();
-    const newDocs: Document[] = [];
 
     try {
       // 1. Get document types to search for
@@ -525,10 +528,20 @@ Please answer based on the FAA regulations and guidance materials provided above
 
       // 6. Take next batch (top N by relevance order from DRS)
       const batchToFetch = unindexedDocs.slice(0, PROGRESSIVE_INDEX_CONFIG.batchSize);
-      console.log(`📥 Fetching ${batchToFetch.length} new documents for progressive indexing...`);
 
-      // 7. Download and extract each document
+      // 7. LAZY MODE: Enqueue for background processing if queue is available
+      if (hasIndexQueue()) {
+        console.log(`📬 Enqueueing ${batchToFetch.length} documents for background indexing...`);
+        await enqueueForIndexing(batchToFetch);
+        // Return empty - documents will be indexed asynchronously
+        return [];
+      }
+
+      // 8. FALLBACK: Inline download if queue not available (original behavior)
+      console.log(`📥 Fetching ${batchToFetch.length} new documents inline (queue not available)...`);
+      const newDocs: Document[] = [];
       let downloadCount = 0;
+      
       for (const { doc, docType } of batchToFetch) {
         if (!doc.mainDocumentDownloadURL) continue;
 
@@ -558,7 +571,7 @@ Please answer based on the FAA regulations and guidance materials provided above
 
       console.log(`✅ Progressive fetch complete: ${newDocs.length} new documents`);
 
-      // 8. Index newly fetched documents in background
+      // 9. Index newly fetched documents in background (inline mode only)
       if (newDocs.length > 0 && hasVectorSearch() && hasEmbeddingService()) {
         this.indexFetchedDocuments([], newDocs).catch(err =>
           console.warn('⚠️ Background indexing of progressive docs failed:', err)

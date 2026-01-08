@@ -2,6 +2,48 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/fu
 import { AircraftCertificationRAG } from "../lib/ragPipeline";
 import { AskQuestionRequest, AskQuestionResponse } from "../lib/types";
 import { getConversationStore, ConversationTurn } from "../lib/conversationStore";
+import { processQueueMessage, decodeQueueMessage, IndexQueueMessage } from "../lib/indexQueue";
+
+// Index Worker - Queue-triggered function for background document indexing
+app.storageQueue('indexWorker', {
+    queueName: process.env.INDEX_QUEUE_NAME || 'index-queue',
+    connection: 'AzureWebJobsStorage',
+    handler: async (message: unknown, context: InvocationContext): Promise<void> => {
+        context.log(`📥 Index worker received message`);
+        
+        try {
+            // Decode the message (Azure Storage Queue sends base64 encoded)
+            let queueMessage: IndexQueueMessage;
+            
+            if (typeof message === 'string') {
+                // Message might be base64 encoded or raw JSON
+                try {
+                    queueMessage = decodeQueueMessage(message);
+                } catch {
+                    // Try parsing as raw JSON
+                    queueMessage = JSON.parse(message);
+                }
+            } else {
+                queueMessage = message as IndexQueueMessage;
+            }
+            
+            context.log(`⏳ Processing: ${queueMessage.docType} ${queueMessage.documentNumber}`);
+            
+            const success = await processQueueMessage(queueMessage);
+            
+            if (success) {
+                context.log(`✅ Successfully indexed: ${queueMessage.docType} ${queueMessage.documentNumber}`);
+            } else {
+                // Throwing will trigger retry/poison queue behavior
+                throw new Error(`Failed to process: ${queueMessage.docType} ${queueMessage.documentNumber}`);
+            }
+        } catch (error) {
+            context.error('❌ Index worker error:', error);
+            // Re-throw to trigger Azure Functions retry behavior
+            throw error;
+        }
+    }
+});
 
 // Ask endpoint - main RAG pipeline
 app.http('ask', {
@@ -151,6 +193,17 @@ app.http('health', {
         // Import vector search functions
         const { hasVectorSearch } = await import('../lib/vectorSearch');
         const { hasEmbeddingService } = await import('../lib/embeddings');
+        const { getQueueStats, hasIndexQueue } = await import('../lib/indexQueue');
+
+        // Get queue statistics if available
+        let indexQueue = null;
+        if (hasIndexQueue()) {
+            try {
+                indexQueue = await getQueueStats();
+            } catch (err) {
+                context.warn('Failed to get queue stats:', err);
+            }
+        }
 
         const config = {
             hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
@@ -158,6 +211,8 @@ app.http('health', {
             hasBlobStorage: !!process.env.BLOB_STORAGE_CONNECTION_STRING,
             hasVectorSearch: hasVectorSearch(),
             hasEmbeddingService: hasEmbeddingService(),
+            hasIndexQueue: hasIndexQueue(),
+            indexQueue,
             nodeVersion: process.version,
             platform: process.platform
         };

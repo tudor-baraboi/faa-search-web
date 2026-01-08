@@ -33,7 +33,7 @@ jobs:
           ###### Repository/Build Configurations - These values can be configured to match your app requirements. ######
           # For more information regarding Static Web App workflow configurations, please visit: https://aka.ms/swaworkflowconfig
           app_location: "/frontend" # App source code path
-          api_location: "" # Empty - using linked Azure Functions instead of managed
+          api_location: "/api" # API source code path - deployed as managed functions
           output_location: "dist" # Built app content directory - optional
           ###### End of Repository/Build Configurations ######
 

@@ -13,6 +13,7 @@ env:
   AZURE_FUNCTIONAPP_NAME: 'faa-search-api'
   AZURE_FUNCTIONAPP_PACKAGE_PATH: 'api'
   NODE_VERSION: '20.x'
+  SWA_URL: 'https://gray-wave-06ac23c1e.6.azurestaticapps.net'
 
 jobs:
   build-and-deploy:
@@ -52,10 +53,8 @@ jobs:
           
           echo "=== Deployment package contents ==="
           ls -la
-          echo "=== dist/ contents ==="
-          ls -la dist/
-          echo "=== dist/functions/ contents ==="
-          ls -la dist/functions/ || echo "No dist/functions directory"
+          echo "=== dist/functions/ ==="
+          ls -la dist/functions/
 
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
@@ -63,3 +62,36 @@ jobs:
           app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
           package: 'deploy-package'
           publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+
+      - name: Wait for deployment to propagate
+        run: sleep 30
+
+      - name: Verify deployment health
+        run: |
+          echo "Checking API health endpoint..."
+          HEALTH_RESPONSE=$(curl -s -w "\n%{http_code}" "${{ env.SWA_URL }}/api/health" || echo "CURL_FAILED")
+          HTTP_CODE=$(echo "$HEALTH_RESPONSE" | tail -n1)
+          BODY=$(echo "$HEALTH_RESPONSE" | head -n-1)
+          
+          echo "HTTP Status: $HTTP_CODE"
+          echo "Response: $BODY"
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Health check failed with status $HTTP_CODE"
+            exit 1
+          fi
+          
+          # Verify required services are available
+          if echo "$BODY" | grep -q '"hasAnthropicKey":true'; then
+            echo "✓ Anthropic API key configured"
+          else
+            echo "::warning::Anthropic API key may not be configured"
+          fi
+          
+          if echo "$BODY" | grep -q '"hasBlobStorage":true'; then
+            echo "✓ Blob storage configured"
+          else
+            echo "::warning::Blob storage may not be configured"
+          fi
+          
+          echo "✓ Deployment verified successfully!"

@@ -16,11 +16,11 @@ import { getConversationStore } from "./conversationStore";
  * Controls how many documents are fetched based on CFR classification
  */
 const DRS_CONFIG = {
-  maxCfrQueries: parseInt(process.env.DRS_MAX_CFR_QUERIES || '3'),
+  maxCfrQueries: parseInt(process.env.DRS_MAX_CFR_QUERIES || '4'),
   maxDocTypes: parseInt(process.env.DRS_MAX_DOC_TYPES || '2'),
-  maxResultsPerSearch: parseInt(process.env.DRS_MAX_RESULTS_PER_SEARCH || '1'),
-  maxTotalDocuments: parseInt(process.env.DRS_MAX_TOTAL_DOCUMENTS || '4'),
-  maxFreshDownloads: parseInt(process.env.DRS_MAX_FRESH_DOWNLOADS || '2'), // Limit fresh PDF downloads
+  maxResultsPerSearch: parseInt(process.env.DRS_MAX_RESULTS_PER_SEARCH || '2'),
+  maxTotalDocuments: parseInt(process.env.DRS_MAX_TOTAL_DOCUMENTS || '6'),
+  maxFreshDownloads: parseInt(process.env.DRS_MAX_FRESH_DOWNLOADS || '4'), // Limit fresh PDF downloads
 };
 
 /**
@@ -377,6 +377,22 @@ Please answer based on the FAA regulations and guidance materials provided above
       documents.push(doc);
       return true;
     };
+
+    // Helper to score document relevance by title match
+    const scoreByTitleRelevance = (title: string, topics: string[]): number => {
+      const titleLower = title.toLowerCase();
+      let score = 0;
+      for (const topic of topics) {
+        // Check for topic words in title
+        const topicWords = topic.toLowerCase().split(/\s+/);
+        for (const word of topicWords) {
+          if (word.length > 3 && titleLower.includes(word)) {
+            score += 1;
+          }
+        }
+      }
+      return score;
+    };
     
     // 1. Extract specific document references from the question (highest priority)
     const docRefs = this.extractDocumentReferences(question);
@@ -443,7 +459,9 @@ Please answer based on the FAA regulations and guidance materials provided above
               
               for (const result of searchResults) {
                 if (result?.mainDocumentDownloadURL && result?.documentNumber) {
-                  candidates.push({ result, docType, score: 0.9 });
+                  // Score by title relevance to topics
+                  const titleScore = scoreByTitleRelevance(result.title, classification.topics || []);
+                  candidates.push({ result, docType, score: 0.9 + (titleScore * 0.1) });
                 }
               }
             }
@@ -458,7 +476,8 @@ Please answer based on the FAA regulations and guidance materials provided above
           
           for (const result of searchResults) {
             if (result?.mainDocumentDownloadURL && result?.documentNumber) {
-              candidates.push({ result, docType, score: 0.85 });
+              const titleScore = scoreByTitleRelevance(result.title, classification.topics || []);
+              candidates.push({ result, docType, score: 0.85 + (titleScore * 0.1) });
             }
           }
         } catch (error) {
@@ -466,13 +485,17 @@ Please answer based on the FAA regulations and guidance materials provided above
         }
       }
       
-      // Deduplicate candidates by URL
+      // Deduplicate candidates by URL and sort by relevance score
       const uniqueCandidates = candidates.filter((c, i, arr) => 
         arr.findIndex(x => x.result.mainDocumentDownloadURL === c.result.mainDocumentDownloadURL) === i &&
         !fetchedUrls.has(c.result.mainDocumentDownloadURL!)
-      );
+      ).sort((a, b) => b.score - a.score); // Sort by score descending
       
-      console.log(`  📋 Found ${uniqueCandidates.length} unique candidates, checking cache...`);
+      console.log(`  📋 Found ${uniqueCandidates.length} unique candidates (sorted by relevance), checking cache...`);
+      // Log top 5 candidates with scores
+      for (const c of uniqueCandidates.slice(0, 5)) {
+        console.log(`    📄 ${c.result.documentNumber}: "${c.result.title.substring(0, 50)}..." score=${c.score.toFixed(2)}`);
+      }
       
       // CACHE-FIRST: Check which candidates are cached (fast parallel check)
       const cacheChecks = await Promise.all(
@@ -482,8 +505,9 @@ Please answer based on the FAA regulations and guidance materials provided above
         }))
       );
       
-      const cachedCandidates = cacheChecks.filter(c => c.isCached);
-      const uncachedCandidates = cacheChecks.filter(c => !c.isCached);
+      // Sort again after adding cache info, maintaining relevance order within cached/uncached groups
+      const cachedCandidates = cacheChecks.filter(c => c.isCached).sort((a, b) => b.score - a.score);
+      const uncachedCandidates = cacheChecks.filter(c => !c.isCached).sort((a, b) => b.score - a.score);
       
       console.log(`  📦 Cache status: ${cachedCandidates.length} cached, ${uncachedCandidates.length} need download`);
       

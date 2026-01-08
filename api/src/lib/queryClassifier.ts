@@ -73,7 +73,10 @@ const CLASSIFIER_SYSTEM_PROMPT = `You are an FAA regulatory classification exper
    - Part 121: Air carrier operations
    - Part 135: Commuter operations
 
+   IMPORTANT: If the user does NOT specify an aircraft category, include BOTH Part 23 AND Part 25 for airplane airworthiness topics (bird strike, structural, performance, systems, etc.). Most topics have parallel requirements in both parts.
+
 3. Specific CFR section numbers if determinable (e.g., "23.2150" for stall speed)
+   - Include sections from ALL applicable parts (e.g., both 23.2270 AND 25.631 for bird strike)
 
 4. Related document types:
    - AC: Advisory Circulars (compliance guidance)
@@ -86,17 +89,19 @@ const CLASSIFIER_SYSTEM_PROMPT = `You are an FAA regulatory classification exper
    - Vague queries: "tell me about regulations", "what are the rules", "help me with certification"
    - Broad queries: "Part 23 requirements" (which aspect?), "aircraft maintenance" (what type?)
    - Clear queries: "stall speed requirements for Part 23", "AC 43.13-1B content"
+   - NOT vague: topic-specific questions like "bird strike testing" - return both Part 23 AND Part 25
    - If unclear, suggest a clarifying question to ask the user
 
-Common section mappings:
-- Stall speed → § 23.2150 or § 25.103
-- Takeoff performance → § 23.2115 or § 25.105
-- Landing performance → § 23.2125 or § 25.125
-- Structural strength → § 23.2240 or § 25.301
-- Flutter → § 23.2245 or § 25.629
-- Fire protection → § 25.1181-1207
-- Fuel system → § 23.2430 or § 25.951-1001
-- Electrical → § 23.2500-2550 or § 25.1351-1365
+Common section mappings (include BOTH when aircraft type not specified):
+- Stall speed → § 23.2150 AND § 25.103
+- Takeoff performance → § 23.2115 AND § 25.105
+- Landing performance → § 23.2125 AND § 25.125
+- Structural strength → § 23.2240 AND § 25.301
+- Flutter → § 23.2245 AND § 25.629
+- Bird strike → § 23.2270 AND § 25.631
+- Fire protection → § 23.2325 AND § 25.1181-1207
+- Fuel system → § 23.2430 AND § 25.951-1001
+- Electrical → § 23.2500-2550 AND § 25.1351-1365
 
 Respond ONLY with valid JSON matching the exact schema. No markdown, no explanation outside JSON.`;
 

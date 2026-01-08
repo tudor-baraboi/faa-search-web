@@ -116,11 +116,20 @@ app.http('ask', {
             };
         } catch (error) {
             context.error("Error processing request:", error);
+            
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            
+            // Check if it's a rate limit error (429)
+            const isRateLimitError = errorMessage.includes('429') || 
+                                     errorMessage.includes('rate_limit') || 
+                                     errorMessage.includes('rate limit');
 
             return {
-                status: 500,
+                status: isRateLimitError ? 429 : 500,
                 jsonBody: {
-                    error: `Internal server error: ${error instanceof Error ? error.message : String(error)}`,
+                    error: isRateLimitError 
+                        ? "Rate limit exceeded. Please wait a moment before trying again."
+                        : `Internal server error: ${errorMessage}`,
                     answer: "",
                     sources: [],
                     sourceCount: 0,

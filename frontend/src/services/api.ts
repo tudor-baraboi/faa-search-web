@@ -21,7 +21,9 @@ class FAASearchAPI {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || `API error: ${response.statusText}`);
+        // Include status code in error message for rate limit detection
+        const errorMessage = errorData.error || `API error: ${response.statusText}`;
+        throw new Error(response.status === 429 ? `429 ${errorMessage}` : errorMessage);
       }
 
       const data: RAGResponse = await response.json();

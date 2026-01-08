@@ -1,0 +1,33 @@
+{
+  "name": "faa-search-api",
+  "version": "1.0.0",
+  "description": "FAA Search API - Azure Functions backend",
+  "main": "dist/functions/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "prestart": "npm run build",
+    "start": "func start",
+    "test": "echo \"No tests yet...\""
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@azure/functions": "^4.5.1",
+    "@azure/search-documents": "^12.2.0",
+    "@azure/storage-blob": "^12.17.0",
+    "crypto-browserify": "^3.12.1",
+    "pdf-parse": "^1.1.1",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
+    "azure-functions-core-tools": "^4.x",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,5 +1,17 @@
 // Frontend TypeScript type definitions
 
+// Re-export shared types (single source of truth)
+export type { 
+  Document,
+  CFRSource, 
+  DRSSource, 
+  RAGResponse, 
+  AskQuestionRequest, 
+  AskQuestionResponse 
+} from '@shared/types/api';
+
+// Frontend-only types (UI state)
+
 export interface Message {
   id: string;
   timestamp: number;
@@ -19,21 +31,6 @@ export interface ConversationState {
   showContext: boolean;
   error: string | null;
   sessionId: string | null;  // Session ID for multi-turn conversations
-}
-
-export interface RAGResponse {
-  answer: string;
-  sources: string[];
-  sourceCount: number;
-  context: string;
-  error?: string;
-  sessionId?: string;            // Session ID returned from API
-  needsClarification?: boolean;  // True if the assistant is asking a clarifying question
-  clarifyingQuestion?: string;   // The clarifying question text
-}
-
-export interface AskQuestionRequest {
-  question: string;
-  sessionId?: string;     // Session ID for conversation continuity
-  isClarifying?: boolean; // True if this is a response to a clarifying question
+  rateLimitCountdown: number | null;  // Seconds until rate limit resets
+  pendingQuestion: string | null;  // Question to retry after rate limit
 }

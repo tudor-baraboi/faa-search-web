@@ -17,6 +17,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
     "@azure/functions": "^4.5.1",
+    "@azure/search-documents": "^12.2.0",
     "@azure/storage-blob": "^12.17.0",
     "crypto-browserify": "^3.12.1",
     "pdf-parse": "^1.1.1",
@@ -26,6 +27,7 @@
     "@types/node": "^22.0.0",
     "@types/uuid": "^10.0.0",
     "azure-functions-core-tools": "^4.x",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
 }

@@ -25,7 +25,9 @@ export class ConversationStorage {
         isLoading: false,
         showContext: data.settings?.showContext || false,
         error: null,
-        sessionId: data.sessionId || null
+        sessionId: data.sessionId || null,
+        rateLimitCountdown: null,
+        pendingQuestion: null
       };
     } catch (error) {
       console.error("Error loading conversation from localStorage:", error);

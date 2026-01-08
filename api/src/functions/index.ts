@@ -102,7 +102,12 @@ app.http('ask', {
                 error: result.error,
                 sessionId,
                 needsClarification: result.needsClarification,
-                clarifyingQuestion: result.clarifyingQuestion
+                clarifyingQuestion: result.clarifyingQuestion,
+                ecfrUsed: result.ecfrUsed,
+                cfrSources: result.cfrSources,
+                drsSources: result.drsSources,
+                classificationUsed: result.classificationUsed,
+                vectorSearchUsed: result.vectorSearchUsed
             };
 
             return {

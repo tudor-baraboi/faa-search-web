@@ -38,6 +38,16 @@ const ChatInterface: Component = () => {
           <LoadingIndicator message="Searching FAA regulations..." />
         </Show>
 
+        <Show when={conversationState.rateLimitCountdown !== null}>
+          <div class="rate-limit-countdown">
+            <div class="countdown-icon">⏳</div>
+            <div class="countdown-text">
+              <strong>Claude is catching its breath...</strong>
+              <p>Rate limit reached. Retrying in <span class="countdown-number">{conversationState.rateLimitCountdown}</span> seconds</p>
+            </div>
+          </div>
+        </Show>
+
         <Show when={conversationState.error}>
           <div class="error-message">
             Error: {conversationState.error}

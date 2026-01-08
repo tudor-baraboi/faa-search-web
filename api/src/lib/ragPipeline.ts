@@ -4,12 +4,14 @@ import "./polyfills";
 import Anthropic from "@anthropic-ai/sdk";
 import { Document, RAGResponse, CFRSource, DRSSource, StoredConversation } from "./types";
 import { createAnthropicClient } from "./anthropic";
-import { DRSClient } from "./drsClient";
+import { DRSClient, DRSDocument } from "./drsClient";
 import { evaluateSearchResults, extractDocumentType, SearchDocument as EvalSearchDocument } from "./searchEvaluator";
 import { classifyQuery, QueryClassification, quickClassifyDocumentRequest } from "./queryClassifier";
 import { ECFRClient, ECFRSection, getECFRClient } from "./ecfrClient";
 import { DocumentCache, getDocumentCache } from "./documentCache";
 import { getConversationStore } from "./conversationStore";
+import { hybridSearch, indexDocuments, ensureIndexExists, hasVectorSearch, FADocument, getIndexedDocumentNumbers } from "./vectorSearch";
+import { hasEmbeddingService } from "./embeddings";
 
 /**
  * DRS Search Configuration
@@ -21,6 +23,28 @@ const DRS_CONFIG = {
   maxResultsPerSearch: parseInt(process.env.DRS_MAX_RESULTS_PER_SEARCH || '2'),
   maxTotalDocuments: parseInt(process.env.DRS_MAX_TOTAL_DOCUMENTS || '6'),
   maxFreshDownloads: parseInt(process.env.DRS_MAX_FRESH_DOWNLOADS || '4'), // Limit fresh PDF downloads
+};
+
+/**
+ * Vector Search Configuration
+ * Controls when to use vector search vs fall back to live APIs
+ */
+const VECTOR_SEARCH_CONFIG = {
+  enabled: process.env.VECTOR_SEARCH_ENABLED !== 'false', // Enabled by default
+  minScoreThreshold: parseFloat(process.env.VECTOR_SEARCH_MIN_SCORE || '0.01'), // Min relevance score (Azure Search uses lower scores)
+  minResultsRequired: parseInt(process.env.VECTOR_SEARCH_MIN_RESULTS || '2'), // Min docs needed
+  maxResults: parseInt(process.env.VECTOR_SEARCH_MAX_RESULTS || '8'), // Max docs to retrieve
+  indexNewDocuments: process.env.VECTOR_INDEX_NEW_DOCS !== 'false', // Index fetched docs
+};
+
+/**
+ * Progressive Indexing Configuration
+ * Incrementally build index over multiple queries
+ */
+const PROGRESSIVE_INDEX_CONFIG = {
+  enabled: process.env.PROGRESSIVE_INDEX_ENABLED !== 'false', // Enabled by default
+  maxIndexedPerTopic: parseInt(process.env.PROGRESSIVE_MAX_INDEXED || '100'), // Cap total indexed docs per topic
+  batchSize: parseInt(process.env.PROGRESSIVE_BATCH_SIZE || '4'), // Docs to download per query
 };
 
 /**
@@ -148,18 +172,119 @@ export class AircraftCertificationRAG {
       };
     }
 
-    // Step 4: Parallel fetch from eCFR and DRS based on classification
-    const [ecfrDocs, drsDocs] = await Promise.all([
-      this.fetchFromECFR(classification),
-      this.fetchFromDRSByClassification(question, classification)
-    ]);
+    // Step 4: Try vector search first (if enabled and available)
+    let vectorDocs: Document[] = [];
+    let vectorSources: { cfrSources: CFRSource[], drsSources: DRSSource[] } = { cfrSources: [], drsSources: [] };
+    let vectorSearchUsed = false;
+    
+    if (VECTOR_SEARCH_CONFIG.enabled && hasVectorSearch() && hasEmbeddingService()) {
+      try {
+        console.log('🔍 Attempting vector search...');
+        const vectorResults = await hybridSearch(question, { top: VECTOR_SEARCH_CONFIG.maxResults });
+        
+        // Filter by minimum score threshold
+        const relevantResults = vectorResults.filter(r => (r.score || 0) >= VECTOR_SEARCH_CONFIG.minScoreThreshold);
+        
+        if (relevantResults.length >= VECTOR_SEARCH_CONFIG.minResultsRequired) {
+          console.log(`✅ Vector search found ${relevantResults.length} relevant docs (scores: ${relevantResults.map(r => r.score?.toFixed(2)).join(', ')})`);
+          vectorSearchUsed = true;
+          
+          for (const result of relevantResults) {
+            const doc = result.document;
+            vectorDocs.push({
+              title: doc.title,
+              chunk: doc.content,
+              score: result.score || 0.8
+            });
+            
+            // Track sources by type
+            if (doc.documentType === 'eCFR' && doc.cfrPart && doc.cfrSection) {
+              vectorSources.cfrSources.push({
+                title: 14,
+                part: doc.cfrPart,
+                section: doc.cfrSection,
+                sectionTitle: doc.title.replace(/^14 CFR § \d+\.\d+ - /, ''),
+                url: doc.source || ''
+              });
+            } else if (doc.documentType && doc.documentNumber) {
+              vectorSources.drsSources.push({
+                docType: doc.documentType,
+                docNumber: doc.documentNumber,
+                title: doc.title
+              });
+            }
+          }
+        } else {
+          console.log(`⚠️ Vector search found only ${relevantResults.length} docs above threshold (need ${VECTOR_SEARCH_CONFIG.minResultsRequired}), falling back to live APIs`);
+        }
+      } catch (error) {
+        console.warn('⚠️ Vector search failed, falling back to live APIs:', error);
+      }
+    } else {
+      const reasons = [];
+      if (!VECTOR_SEARCH_CONFIG.enabled) reasons.push('disabled');
+      if (!hasVectorSearch()) reasons.push('no search service');
+      if (!hasEmbeddingService()) reasons.push('no embedding service');
+      console.log(`ℹ️ Vector search skipped (${reasons.join(', ')})`);
+    }
+
+    // Step 5: Parallel fetch from eCFR and DRS (if vector search didn't find enough)
+    let ecfrDocs: ECFRSection[] = [];
+    let drsDocs: Document[] = [];
+    let progressiveDocs: Document[] = [];
+    
+    if (!vectorSearchUsed || vectorDocs.length < VECTOR_SEARCH_CONFIG.minResultsRequired) {
+      console.log('📡 Fetching from live APIs (eCFR + DRS)...');
+      [ecfrDocs, drsDocs] = await Promise.all([
+        this.fetchFromECFR(classification),
+        this.fetchFromDRSByClassification(question, classification)
+      ]);
+      
+      // Step 5b: Index newly fetched documents for future queries
+      if (VECTOR_SEARCH_CONFIG.indexNewDocuments && hasVectorSearch() && hasEmbeddingService()) {
+        this.indexFetchedDocuments(ecfrDocs, drsDocs).catch(err => 
+          console.warn('⚠️ Background indexing failed:', err)
+        );
+      }
+    } else {
+      console.log('✅ Using vector search results');
+      
+      // Step 5c: Progressive indexing - fetch next batch of unindexed documents
+      // This incrementally builds the index over multiple queries
+      if (classification && PROGRESSIVE_INDEX_CONFIG.enabled) {
+        console.log('🔄 Checking for new documents to index progressively...');
+        progressiveDocs = await this.fetchNewDocumentsProgressively(classification);
+      }
+    }
 
     // Combine all documents, prioritizing by source authority
     let allDocs: Document[] = [];
     const cfrSources: CFRSource[] = [];
     const drsSources: DRSSource[] = [];
     
-    // eCFR sections (highest authority for regulations)
+    // First: Add vector search results (already filtered by relevance)
+    if (vectorSearchUsed && vectorDocs.length > 0) {
+      allDocs = allDocs.concat(vectorDocs);
+      cfrSources.push(...vectorSources.cfrSources);
+      drsSources.push(...vectorSources.drsSources);
+    }
+    
+    // Add progressively fetched documents (new unindexed docs)
+    if (progressiveDocs.length > 0) {
+      allDocs = allDocs.concat(progressiveDocs);
+      // Track sources from progressive docs
+      for (const doc of progressiveDocs) {
+        if (doc.docType && doc.docNumber) {
+          drsSources.push({
+            docType: doc.docType,
+            docNumber: doc.docNumber,
+            title: doc.title
+          });
+        }
+      }
+    }
+    
+    // Then: eCFR sections from live API (highest authority for regulations)
     for (const section of ecfrDocs) {
       allDocs.push({
         title: `14 CFR § ${section.part}.${section.section} - ${section.sectionTitle}`,
@@ -175,10 +300,10 @@ export class AircraftCertificationRAG {
       });
     }
     
-    // DRS documents (high authority for ACs, ADs)
+    // Finally: DRS documents from live API (high authority for ACs, ADs)
     allDocs = allDocs.concat(drsDocs);
 
-    // Step 5: Handle no results
+    // Step 6: Handle no results
     if (allDocs.length === 0) {
       // Last resort: try legacy DRS fallback
       console.log('🔄 No documents found, attempting legacy DRS fallback...');
@@ -238,9 +363,11 @@ Please answer based on the FAA regulations and guidance materials provided above
         sourceCount: allDocs.length,
         context,
         sessionId,
-        ecfrUsed: ecfrDocs.length > 0,
+        ecfrUsed: ecfrDocs.length > 0 || vectorSources.cfrSources.length > 0,
         cfrSources: cfrSources.length > 0 ? cfrSources : undefined,
-        classificationUsed
+        drsSources: drsSources.length > 0 ? drsSources : undefined,
+        classificationUsed,
+        vectorSearchUsed
       };
     } catch (error) {
       console.error("Error generating answer:", error);
@@ -319,6 +446,220 @@ Please answer based on the FAA regulations and guidance materials provided above
   }
 
   /**
+   * Progressive indexing: fetch next batch of unindexed documents
+   * Even when vector search succeeds, check DRS metadata for new documents
+   * to incrementally build the index over multiple queries.
+   * 
+   * @returns Array of newly fetched documents (to include in current response)
+   */
+  private async fetchNewDocumentsProgressively(
+    classification: QueryClassification
+  ): Promise<Document[]> {
+    if (!PROGRESSIVE_INDEX_CONFIG.enabled) {
+      return [];
+    }
+
+    const drsClient = new DRSClient();
+    const newDocs: Document[] = [];
+
+    try {
+      // 1. Get document types to search for
+      const allDocTypes = ['AC', 'TSO', 'Order'] as const;
+      const docTypes = (classification.documentTypes && classification.documentTypes.length > 0)
+        ? classification.documentTypes.filter(t => t !== 'AD').slice(0, 2)
+        : allDocTypes.slice(0, 2);
+
+      // 2. Build keywords from classification
+      const keywords: string[] = [];
+      if (classification.topics) keywords.push(...classification.topics.slice(0, 3));
+      if (classification.cfrParts) {
+        keywords.push(...classification.cfrParts.map(p => `14 CFR Part ${p}`));
+      }
+      if (keywords.length === 0) return [];
+
+      // 3. Get already-indexed document numbers from vector store
+      const indexedDocNumbers = await getIndexedDocumentNumbers();
+      console.log(`📋 Progressive indexing: ${indexedDocNumbers.size} docs already indexed`);
+
+      // Check if we've hit the cap
+      if (indexedDocNumbers.size >= PROGRESSIVE_INDEX_CONFIG.maxIndexedPerTopic) {
+        console.log(`📊 Index cap reached (${PROGRESSIVE_INDEX_CONFIG.maxIndexedPerTopic}), skipping progressive fetch`);
+        return [];
+      }
+
+      // 4. Query DRS for metadata (no PDF download yet)
+      let metadataResults: { doc: DRSDocument; docType: string }[] = [];
+      
+      for (const docType of docTypes) {
+        const results = await drsClient.searchDocumentsFiltered(
+          keywords,
+          docType,
+          { statusFilter: ['Current'], maxResults: 50 }
+        );
+        
+        for (const doc of results) {
+          metadataResults.push({ doc, docType });
+        }
+      }
+
+      console.log(`📡 DRS metadata check: found ${metadataResults.length} potential documents`);
+
+      // 5. Filter out already-indexed documents
+      const unindexedDocs = metadataResults.filter(({ doc }) => {
+        const normalizedNumber = doc.documentNumber.replace(/^(AC|AD|TSO|Order)\s*/i, '').trim().toUpperCase();
+        return !indexedDocNumbers.has(normalizedNumber);
+      });
+
+      console.log(`🆕 Found ${unindexedDocs.length} unindexed documents`);
+
+      if (unindexedDocs.length === 0) {
+        return [];
+      }
+
+      // 6. Take next batch (top N by relevance order from DRS)
+      const batchToFetch = unindexedDocs.slice(0, PROGRESSIVE_INDEX_CONFIG.batchSize);
+      console.log(`📥 Fetching ${batchToFetch.length} new documents for progressive indexing...`);
+
+      // 7. Download and extract each document
+      let downloadCount = 0;
+      for (const { doc, docType } of batchToFetch) {
+        if (!doc.mainDocumentDownloadURL) continue;
+
+        try {
+          const result = await drsClient.fetchDocumentDirect(doc, docType);
+          if (result) {
+            downloadCount++;
+            const maxChars = 50000;
+            const truncatedText = result.text.length > maxChars
+              ? result.text.substring(0, maxChars) + "\n\n[Document truncated due to length...]"
+              : result.text;
+
+            newDocs.push({
+              title: doc.title,
+              chunk: truncatedText,
+              score: 0.9,
+              docType: docType,
+              docNumber: doc.documentNumber
+            });
+
+            console.log(`  ⬇️ Downloaded: ${docType} ${doc.documentNumber} (${downloadCount}/${batchToFetch.length})`);
+          }
+        } catch (err) {
+          console.warn(`  ⚠️ Failed to download ${docType} ${doc.documentNumber}:`, err);
+        }
+      }
+
+      console.log(`✅ Progressive fetch complete: ${newDocs.length} new documents`);
+
+      // 8. Index newly fetched documents in background
+      if (newDocs.length > 0 && hasVectorSearch() && hasEmbeddingService()) {
+        this.indexFetchedDocuments([], newDocs).catch(err =>
+          console.warn('⚠️ Background indexing of progressive docs failed:', err)
+        );
+      }
+
+      return newDocs;
+    } catch (error) {
+      console.warn('⚠️ Progressive indexing check failed:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Index newly fetched documents for future vector search queries
+   * Runs in background to avoid blocking the response
+   */
+  private async indexFetchedDocuments(
+    ecfrSections: ECFRSection[], 
+    drsDocs: Document[]
+  ): Promise<void> {
+    const { generateEmbeddings } = await import('./embeddings');
+    const { indexDocuments: indexToVectorDB } = await import('./vectorSearch');
+    
+    const docsToIndex: FADocument[] = [];
+    
+    // Convert eCFR sections to indexable format
+    for (const section of ecfrSections) {
+      const docId = `ecfr-14-${section.part}-${section.section}`;
+      docsToIndex.push({
+        id: docId,
+        documentType: 'eCFR',
+        title: `14 CFR § ${section.part}.${section.section} - ${section.sectionTitle}`,
+        content: section.content,
+        cfrPart: section.part,
+        cfrSection: section.section,
+        source: section.url,
+        lastIndexed: new Date()
+      });
+    }
+    
+    // Convert DRS documents to indexable format
+    // Now uses structured metadata from Document instead of parsing title
+    for (const doc of drsDocs) {
+      // Use metadata if available, skip if not (shouldn't happen with new code)
+      if (doc.docType && doc.docNumber) {
+        const docId = `drs-${doc.docType.toLowerCase()}-${doc.docNumber.replace(/[^a-zA-Z0-9]/g, '-')}`;
+        
+        docsToIndex.push({
+          id: docId,
+          documentType: doc.docType,
+          documentNumber: doc.docNumber,
+          title: doc.title,
+          content: doc.chunk,
+          source: `FAA DRS`,
+          lastIndexed: new Date(),
+          // Include additional metadata if available
+          revision: doc.revision,
+          changeNumber: doc.changeNumber,
+          status: doc.status
+        });
+      } else {
+        // Fallback: try to parse from title for backwards compatibility
+        const match = doc.title.match(/^(AC|TSO|Order|AD)\s*([^\s-]+(?:-[^\s]+)?)/i);
+        if (match) {
+          const docType = match[1].toUpperCase();
+          const docNumber = match[2];
+          const docId = `drs-${docType.toLowerCase()}-${docNumber.replace(/[^a-zA-Z0-9]/g, '-')}`;
+          
+          docsToIndex.push({
+            id: docId,
+            documentType: docType,
+            documentNumber: docNumber,
+            title: doc.title,
+            content: doc.chunk,
+            source: `FAA DRS`,
+            lastIndexed: new Date()
+          });
+        }
+      }
+    }
+    
+    if (docsToIndex.length === 0) {
+      return;
+    }
+    
+    console.log(`📥 Indexing ${docsToIndex.length} documents for vector search...`);
+    
+    try {
+      // Generate embeddings for all documents
+      const embeddings = await generateEmbeddings(docsToIndex.map(d => d.content));
+      
+      // Add embeddings to documents
+      const docsWithEmbeddings = docsToIndex.map((doc, i) => ({
+        ...doc,
+        contentVector: embeddings[i]
+      }));
+      
+      // Index in vector store
+      await indexToVectorDB(docsWithEmbeddings);
+      console.log(`✅ Successfully indexed ${docsWithEmbeddings.length} documents`);
+    } catch (error) {
+      console.error('❌ Failed to index documents:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Fetch eCFR sections based on classification
    */
   private async fetchFromECFR(classification: QueryClassification | null): Promise<ECFRSection[]> {
@@ -369,7 +710,7 @@ Please answer based on the FAA regulations and guidance materials provided above
     let freshDownloadCount = 0; // Track fresh PDF downloads (slow operations)
     
     // Helper to add document with deduplication
-    const addDocument = (doc: { title: string; chunk: string; score: number }, downloadUrl: string): boolean => {
+    const addDocument = (doc: Document, downloadUrl: string): boolean => {
       if (fetchedUrls.has(downloadUrl)) {
         return false;
       }
@@ -406,11 +747,13 @@ Please answer based on the FAA regulations and guidance materials provided above
         const truncatedText = result.text.length > maxChars
           ? result.text.substring(0, maxChars) + "\n\n[Document truncated due to length...]"
           : result.text;
-          
+        // Use structured metadata instead of embedding in title
         addDocument({
           title: result.doc.title,
           chunk: truncatedText,
-          score: 1.0
+          score: 1.0,
+          docType: ref.docType,
+          docNumber: result.doc.documentNumber
         }, result.doc.mainDocumentDownloadURL);
       }
     }
@@ -518,12 +861,15 @@ Please answer based on the FAA regulations and guidance materials provided above
         const fetched = await drsClient.fetchDocumentDirect(c.result, c.docType);
         if (fetched) {
           const maxChars = 30000;
+          // Use structured metadata instead of embedding in title
           addDocument({
             title: fetched.doc.title,
             chunk: fetched.text.substring(0, maxChars),
-            score: c.score
+            score: c.score,
+            docType: c.docType,
+            docNumber: c.result.documentNumber
           }, c.result.mainDocumentDownloadURL!);
-          console.log(`  📦 Cache hit: ${fetched.doc.title}`);
+          console.log(`  📦 Cache hit: ${c.docType} ${c.result.documentNumber}`);
         }
       }
       
@@ -539,12 +885,15 @@ Please answer based on the FAA regulations and guidance materials provided above
         if (fetched) {
           freshDownloadCount++;
           const maxChars = 30000;
+          // Use structured metadata instead of embedding in title
           addDocument({
             title: fetched.doc.title,
             chunk: fetched.text.substring(0, maxChars),
-            score: c.score
+            score: c.score,
+            docType: c.docType,
+            docNumber: c.result.documentNumber
           }, c.result.mainDocumentDownloadURL!);
-          console.log(`  ⬇️ Downloaded: ${fetched.doc.title} (${freshDownloadCount}/${DRS_CONFIG.maxFreshDownloads})`);
+          console.log(`  ⬇️ Downloaded: ${c.docType} ${c.result.documentNumber} (${freshDownloadCount}/${DRS_CONFIG.maxFreshDownloads})`);
         }
       }
     }
@@ -567,10 +916,13 @@ Please answer based on the FAA regulations and guidance materials provided above
             );
             if (result) {
               const maxChars = 30000;
+              // Use structured metadata instead of embedding in title
               addDocument({
                 title: result.doc.title,
                 chunk: result.text.substring(0, maxChars),
-                score: 0.9
+                score: 0.9,
+                docType: docType,
+                docNumber: result.doc.documentNumber
               }, topResult.documentNumber);
             }
           }

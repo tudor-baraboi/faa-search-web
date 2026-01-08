@@ -9,8 +9,44 @@ const initialState: ConversationState = storage.load() || {
   isLoading: false,
   showContext: false,
   error: null,
-  sessionId: null
+  sessionId: null,
+  rateLimitCountdown: null,
+  pendingQuestion: null
 };
+
+// Rate limit countdown interval
+let countdownInterval: ReturnType<typeof setInterval> | null = null;
+
+// Start rate limit countdown (60 seconds)
+function startRateLimitCountdown(question: string) {
+  setConversationState("rateLimitCountdown", 60);
+  setConversationState("pendingQuestion", question);
+  setConversationState("error", null);
+  
+  if (countdownInterval) clearInterval(countdownInterval);
+  
+  countdownInterval = setInterval(() => {
+    const current = conversationState.rateLimitCountdown;
+    if (current !== null && current > 0) {
+      setConversationState("rateLimitCountdown", current - 1);
+    } else {
+      // Countdown finished, retry the question
+      if (countdownInterval) clearInterval(countdownInterval);
+      countdownInterval = null;
+      const pending = conversationState.pendingQuestion;
+      setConversationState("rateLimitCountdown", null);
+      setConversationState("pendingQuestion", null);
+      if (pending) {
+        conversationActions.askQuestion(pending);
+      }
+    }
+  }, 1000);
+}
+
+// Check if error is a rate limit error
+function isRateLimitError(error: string): boolean {
+  return error.includes('429') || error.includes('rate_limit') || error.includes('rate limit');
+}
 
 export const [conversationState, setConversationState] = createStore<ConversationState>(initialState);
 
@@ -72,7 +108,14 @@ export const conversationActions = {
       storage.save(conversationState);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      setConversationState("error", errorMessage);
+      
+      // Check if it's a rate limit error
+      if (isRateLimitError(errorMessage)) {
+        console.log("Rate limit hit, starting 60s countdown...");
+        startRateLimitCountdown(question);
+      } else {
+        setConversationState("error", errorMessage);
+      }
       console.error("Failed to get answer:", error);
     } finally {
       setConversationState("isLoading", false);

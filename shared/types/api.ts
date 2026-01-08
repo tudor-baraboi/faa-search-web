@@ -1,4 +1,7 @@
-// TypeScript type definitions for FAA Search API
+/**
+ * Shared type definitions for FAA Search API
+ * Used by both API and frontend packages
+ */
 
 /**
  * Document with optional metadata fields for structured querying
@@ -72,12 +75,3 @@ export interface AskQuestionRequest {
  * Response from ask question endpoint
  */
 export interface AskQuestionResponse extends RAGResponse {}
-
-// Re-export from queryClassifier
-export type { QueryClassification } from './queryClassifier';
-
-// Re-export from ecfrClient
-export type { ECFRSection, ECFRSearchResult } from './ecfrClient';
-
-// Re-export from conversationStore
-export type { ConversationTurn, StoredConversation } from './conversationStore';

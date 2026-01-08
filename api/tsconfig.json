@@ -3,13 +3,14 @@
     "module": "commonjs",
     "target": "ES2019",
     "outDir": "dist",
-    "rootDir": "src",
     "sourceMap": true,
     "strict": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "rootDir": "src"
   },
   "include": [
     "src/**/*"

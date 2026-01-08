@@ -138,11 +138,17 @@ app.http('health', {
     route: 'health',
     handler: async (request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> => {
         context.log(`Health check endpoint called`);
+        
+        // Import vector search functions
+        const { hasVectorSearch } = await import('../lib/vectorSearch');
+        const { hasEmbeddingService } = await import('../lib/embeddings');
 
         const config = {
             hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
             hasDrsApiKey: !!process.env.DRS_API_KEY,
             hasBlobStorage: !!process.env.BLOB_STORAGE_CONNECTION_STRING,
+            hasVectorSearch: hasVectorSearch(),
+            hasEmbeddingService: hasEmbeddingService(),
             nodeVersion: process.version,
             platform: process.platform
         };

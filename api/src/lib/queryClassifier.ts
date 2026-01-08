@@ -216,27 +216,42 @@ function validateDocumentTypes(types: unknown): QueryClassification['documentTyp
  * Use before LLM classifier to save API calls
  */
 export function quickClassifyDocumentRequest(query: string): { isDocRequest: boolean; docType?: string; docNumber?: string } {
+  const lowerQuery = query.toLowerCase();
+  
+  // Only trigger direct document request if user explicitly asks to "show", "get", "download", etc.
+  // NOT when they reference a document in context of a question
+  const isExplicitRequest = /^(show|get|download|display|find|give|what is|what does)\s/i.test(query.trim()) ||
+    /\b(show me|give me|get me|find me)\b/i.test(query);
+  
+  // If query contains question words like "what are", "how do", "per", "according to", 
+  // it's NOT a direct document request - it's a question ABOUT the document
+  const isQuestion = /\b(what are|how do|how can|per |according to|based on|requirements|compliance)\b/i.test(query);
+  
+  if (isQuestion && !isExplicitRequest) {
+    return { isDocRequest: false };
+  }
+  
   // AC pattern: AC 43.13-1B, AC 150/5340-30J
   const acMatch = query.match(/\bAC\s+([\d\/.-]+[A-Z]?)/i);
-  if (acMatch) {
+  if (acMatch && isExplicitRequest) {
     return { isDocRequest: true, docType: 'AC', docNumber: acMatch[1] };
   }
   
   // AD pattern: AD 2023-01-05
   const adMatch = query.match(/\bAD\s+([\d-]+)/i);
-  if (adMatch) {
+  if (adMatch && isExplicitRequest) {
     return { isDocRequest: true, docType: 'AD', docNumber: adMatch[1] };
   }
   
   // TSO pattern: TSO-C129a
   const tsoMatch = query.match(/\bTSO[-\s]?([A-Z]?\d+[A-Za-z]?)/i);
-  if (tsoMatch) {
+  if (tsoMatch && isExplicitRequest) {
     return { isDocRequest: true, docType: 'TSO', docNumber: tsoMatch[1] };
   }
   
   // Order pattern: Order 8900.1
   const orderMatch = query.match(/\bOrder\s+(\d+\.\d+[A-Z]?)/i);
-  if (orderMatch) {
+  if (orderMatch && isExplicitRequest) {
     return { isDocRequest: true, docType: 'Order', docNumber: orderMatch[1] };
   }
   

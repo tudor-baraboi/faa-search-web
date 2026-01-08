@@ -42,11 +42,10 @@ jobs:
           app_location: "/frontend" # App source code path
           api_location: "/api" # Api source code path - optional
           output_location: "dist" # Built app content directory - optional
-          skip_api_build: true
+          api_build_command: "echo 'Already built with Node 20'"
           ###### End of Repository/Build Configurations ######
         env:
           NODE_VERSION: "20"
-          WEBSITE_NODE_DEFAULT_VERSION: "~20"
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'

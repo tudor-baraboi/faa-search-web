@@ -1107,6 +1107,22 @@ Query: "stall speed compliance"
 
 2. **No new secrets needed** — uses `BLOB_STORAGE_CONNECTION_STRING` (or `AzureWebJobsStorage` locally)
 
+#### ⚠️ Production Caching Verification Checklist
+
+**CRITICAL:** Always verify caching is working in production after deployment. The cache significantly improves response quality and latency.
+
+| Step | Command | Expected |
+|------|---------|----------|
+| 1. Check env var name | Code uses `BLOB_STORAGE_CONNECTION_STRING` | NOT `AZURE_STORAGE_CONNECTION_STRING` |
+| 2. Verify Function App setting | `az functionapp config appsettings list --name <app> --resource-group <rg> \| jq '.[] \| select(.name=="BLOB_STORAGE_CONNECTION_STRING")'` | Connection string present |
+| 3. Health check | `curl https://<app-url>/api/health \| jq '.hasBlobStorage'` | `true` |
+| 4. Verify cache container exists | `az storage blob list --account-name <storage> --container-name document-cache --output table` | Shows cached documents |
+
+**Common Issues:**
+- Wrong env var name (`AZURE_STORAGE_CONNECTION_STRING` vs `BLOB_STORAGE_CONNECTION_STRING`)
+- Missing connection string in Function App settings
+- Need to restart Function App after setting env vars: `az functionapp restart --name <app> --resource-group <rg>`
+
 ### CFR→Document Mapping Enhancement
 
 The Query Classifier identifies CFR parts/sections from user queries. This enhancement automatically searches DRS for related documents (ACs, ADs, TSOs, Orders) based on those CFR references, ensuring Claude has both the regulatory requirements AND compliance guidance in context.

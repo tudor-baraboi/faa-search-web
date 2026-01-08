@@ -76,7 +76,7 @@ const CLASSIFIER_SYSTEM_PROMPT = `You are an FAA regulatory classification exper
    IMPORTANT: If the user does NOT specify an aircraft category, include BOTH Part 23 AND Part 25 for airplane airworthiness topics (bird strike, structural, performance, systems, etc.). Most topics have parallel requirements in both parts.
 
 3. Specific CFR section numbers if determinable (e.g., "23.2150" for stall speed)
-   - Include sections from ALL applicable parts (e.g., both 23.2270 AND 25.631 for bird strike)
+   - Include sections from ALL applicable parts (e.g., both 23.2240 AND 25.631 for bird strike)
 
 4. Related document types:
    - AC: Advisory Circulars (compliance guidance)
@@ -96,9 +96,10 @@ Common section mappings (include BOTH when aircraft type not specified):
 - Stall speed → § 23.2150 AND § 25.103
 - Takeoff performance → § 23.2115 AND § 25.105
 - Landing performance → § 23.2125 AND § 25.125
-- Structural strength → § 23.2240 AND § 25.301
-- Flutter → § 23.2245 AND § 25.629
-- Bird strike → § 23.2270 AND § 25.631
+- Structural strength → § 23.2235 AND § 25.301
+- Structural durability (includes bird strike, fatigue) → § 23.2240 AND § 25.571
+- Bird strike damage → § 23.2240 (durability) AND § 25.631 (bird strike damage)
+- Flutter/aeroelasticity → § 23.2245 AND § 25.629
 - Fire protection → § 23.2325 AND § 25.1181-1207
 - Fuel system → § 23.2430 AND § 25.951-1001
 - Electrical → § 23.2500-2550 AND § 25.1351-1365

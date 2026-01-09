@@ -420,6 +420,42 @@ export async function getIndexedDocumentNumbers(
 }
 
 /**
+ * Get all indexed CFR sections from the vector store
+ * Returns a Set of strings like "23.2240", "25.631" for quick lookup
+ */
+export async function getIndexedCFRSections(
+  maxResults: number = 1000
+): Promise<Set<string>> {
+  if (!hasVectorSearch()) return new Set();
+  
+  try {
+    const client = getSearchClient();
+    
+    // Filter for eCFR documents only
+    const searchResults = await client.search('*', {
+      filter: `documentType eq 'eCFR'`,
+      top: maxResults,
+      select: ['cfrPart', 'cfrSection'],
+      queryType: 'simple',
+    });
+    
+    const cfrSections = new Set<string>();
+    for await (const result of searchResults.results) {
+      const doc = result.document as FADocument;
+      if (doc.cfrPart && doc.cfrSection) {
+        // Format: "23.2240", "25.631"
+        cfrSections.add(`${doc.cfrPart}.${doc.cfrSection}`);
+      }
+    }
+    
+    return cfrSections;
+  } catch (error) {
+    console.warn('⚠️ Could not query indexed CFR sections:', error);
+    return new Set();
+  }
+}
+
+/**
  * Delete all documents from the index
  * Used for reindexing with new chunking strategy
  */

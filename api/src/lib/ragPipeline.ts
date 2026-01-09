@@ -10,7 +10,7 @@ import { classifyQuery, QueryClassification, quickClassifyDocumentRequest } from
 import { ECFRClient, ECFRSection, getECFRClient } from "./ecfrClient";
 import { DocumentCache, getDocumentCache } from "./documentCache";
 import { getConversationStore } from "./conversationStore";
-import { hybridSearch, indexDocuments, ensureIndexExists, hasVectorSearch, FADocument, getIndexedDocumentNumbers } from "./vectorSearch";
+import { hybridSearch, indexDocuments, ensureIndexExists, hasVectorSearch, FADocument, getIndexedDocumentNumbers, getIndexedCFRSections } from "./vectorSearch";
 import { hasEmbeddingService } from "./embeddings";
 import { enqueueForIndexing, hasIndexQueue } from "./indexQueue";
 
@@ -472,8 +472,10 @@ Please answer based on the FAA regulations and guidance materials provided above
    * Even when vector search succeeds, check DRS metadata for new documents
    * to incrementally build the index over multiple queries.
    * 
-   * LAZY MODE: With queue enabled, enqueue documents for background processing
-   * instead of downloading inline. This reduces request latency significantly.
+   * Also fetches CFR sections from eCFR API and indexes them.
+   * 
+   * LAZY MODE: With queue enabled, enqueue DRS documents for background processing
+   * instead of downloading inline. CFRs are always fetched inline (small, fast).
    * 
    * @returns Array of newly fetched documents (empty in lazy mode - docs indexed async)
    */
@@ -485,8 +487,52 @@ Please answer based on the FAA regulations and guidance materials provided above
     }
 
     const drsClient = new DRSClient();
+    const newCFRSections: ECFRSection[] = [];
 
     try {
+      // === CFR PROGRESSIVE INDEXING ===
+      // Fetch and index CFR sections mentioned in classification
+      if (classification.cfrSections && classification.cfrSections.length > 0) {
+        const indexedCFRs = await getIndexedCFRSections();
+        console.log(`📋 Progressive CFR indexing: ${indexedCFRs.size} CFR sections already indexed`);
+        
+        for (const sectionRef of classification.cfrSections) {
+          // Parse section reference like "23.2150" or "25.1309"
+          const match = sectionRef.match(/(\d+)\.(\d+)/);
+          if (!match) continue;
+          
+          const part = parseInt(match[1]);
+          const section = match[2];
+          const sectionKey = `${part}.${section}`;
+          
+          // Skip if already indexed
+          if (indexedCFRs.has(sectionKey)) {
+            console.log(`  ✅ CFR § ${sectionKey} already indexed`);
+            continue;
+          }
+          
+          try {
+            // Fetch from eCFR API (fast, text-only)
+            const ecfrSection = await this.ecfrClient.fetchSection(14, part, section);
+            if (ecfrSection) {
+              newCFRSections.push(ecfrSection);
+              console.log(`  📥 Fetched CFR § ${sectionKey} for indexing`);
+            }
+          } catch (error) {
+            console.warn(`  ⚠️ Failed to fetch CFR § ${sectionKey}:`, error);
+          }
+        }
+        
+        // Index new CFR sections immediately (they're small, no queue needed)
+        if (newCFRSections.length > 0 && hasVectorSearch() && hasEmbeddingService()) {
+          console.log(`📥 Indexing ${newCFRSections.length} new CFR sections...`);
+          this.indexFetchedDocuments(newCFRSections, []).catch(err =>
+            console.warn('⚠️ Background indexing of CFR sections failed:', err)
+          );
+        }
+      }
+
+      // === DRS PROGRESSIVE INDEXING ===
       // 1. Get document types to search for
       const allDocTypes = ['AC', 'TSO', 'Order'] as const;
       const docTypes = (classification.documentTypes && classification.documentTypes.length > 0)

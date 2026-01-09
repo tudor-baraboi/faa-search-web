@@ -39,7 +39,9 @@
 | Narrowing Questions (Stage 2) | 🔄 Planned | Part of above | Post-fetch clarity check |
 | Azure OpenAI Migration | ⏸️ Optional | ~2h | Replace Claude for Azure billing |
 | Token Optimization | 🔄 Planned | ~4h | Chunking + context reduction |
-| Document Chunking | 🔄 Planned | ~6h | Split large docs into ~2K char chunks |
+| Document Chunking | ✅ Done | ~6h | Claude semantic chunking with 2K char targets |
+| Citation Graph Traversal | 🔄 Planned | ~8h | Follow document references to fetch related docs |
+| CFR Progressive Indexing | ✅ Done | ~2h | Fetch and index eCFR sections from classifier |
 
 ### ❌ Not in MVP
 
@@ -49,6 +51,7 @@
 | Compliance matrix generation | Phase 3 |
 | User authentication | Phase 2+ |
 | Proactive DRS monitoring | Phase 4 |
+| Full citation graph traversal (depth > 1) | Phase 3 |
 
 ---
 

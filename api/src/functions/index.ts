@@ -243,12 +243,14 @@ app.http('reindex', {
                 clearIndex?: boolean;
                 docTypes?: string[];
                 searchTerms?: string[];
+                documentNumbers?: string[];  // Direct document numbers to fetch
                 limit?: number;
             };
             
             const clearIndex = body.clearIndex !== false; // Default true
             const docTypes = body.docTypes || ['AC']; // Default to ACs only
             const searchTerms = body.searchTerms; // Custom search terms (optional)
+            const documentNumbers = body.documentNumbers || []; // Direct doc numbers
             const limit = body.limit || 50; // Default 50 docs
             
             // Check prerequisites
@@ -270,7 +272,38 @@ app.http('reindex', {
             // Step 2: Search DRS for documents to reindex
             const drsClient = new DRSClient();
             const enqueuedDocs: string[] = [];
+            const seenGuids = new Set<string>();
             
+            // Step 2a: Fetch specific document numbers first
+            for (const docNumber of documentNumbers) {
+                if (enqueuedDocs.length >= limit) break;
+                
+                // Determine doc type from number or use first docType
+                const docType = docNumber.toUpperCase().startsWith('AD') ? 'AD' 
+                    : docNumber.toUpperCase().startsWith('TSO') ? 'TSO'
+                    : docNumber.toUpperCase().startsWith('ORDER') ? 'Order'
+                    : docTypes[0] || 'AC';
+                
+                try {
+                    context.log(`Fetching document by number: ${docNumber} (type: ${docType})`);
+                    const doc = await drsClient.searchByDocumentNumber(docNumber, docType);
+                    
+                    if (doc && !seenGuids.has(doc.documentGuid)) {
+                        seenGuids.add(doc.documentGuid);
+                        const enqueued = await enqueueForIndexing([{ doc, docType }]);
+                        if (enqueued > 0) {
+                            enqueuedDocs.push(`${docType} ${doc.documentNumber}`);
+                            context.log(`Enqueued: ${docType} ${doc.documentNumber}`);
+                        }
+                    } else if (!doc) {
+                        context.warn(`Document not found: ${docNumber}`);
+                    }
+                } catch (err) {
+                    context.warn(`Failed to fetch "${docNumber}":`, err);
+                }
+            }
+            
+            // Step 2b: Search DRS for documents by search terms
             for (const docType of docTypes) {
                 context.log(`Searching DRS for ${docType} documents...`);
                 
@@ -278,7 +311,6 @@ app.http('reindex', {
                 const searchList = searchTerms && searchTerms.length > 0 
                     ? searchTerms 
                     : ['Part 23', 'Part 25', 'Part 27', 'Part 33', 'Part 35', 'Part 43'];
-                const seenGuids = new Set<string>();
                 
                 for (const searchTerm of searchList) {
                     if (enqueuedDocs.length >= limit) break;

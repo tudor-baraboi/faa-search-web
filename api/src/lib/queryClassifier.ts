@@ -97,12 +97,20 @@ Common section mappings (include BOTH when aircraft type not specified):
 - Takeoff performance → § 23.2115 AND § 25.105
 - Landing performance → § 23.2125 AND § 25.125
 - Structural strength → § 23.2235 AND § 25.301
-- Structural durability (includes bird strike, fatigue) → § 23.2240 AND § 25.571
-- Bird strike damage → § 23.2240 (durability) AND § 25.631 (bird strike damage)
+- Structural durability (includes fatigue, damage tolerance) → § 23.2240 AND § 25.571
+- Bird strike damage (empennage/airframe) → § 25.631, § 25.362 (supplementary gust conditions), § 29.631 (rotorcraft)
+- Bird ingestion (engines) → § 33.76 (ALWAYS include for bird strike questions involving engines)
 - Flutter/aeroelasticity → § 23.2245 AND § 25.629
 - Fire protection → § 23.2325 AND § 25.1181-1207
 - Fuel system → § 23.2430 AND § 25.951-1001
 - Electrical → § 23.2500-2550 AND § 25.1351-1365
+
+IMPORTANT for bird strike questions:
+- Part 23 (normal category) has NO explicit bird strike section - uses performance-based § 23.2240 (structural durability)
+- Part 25 (transport category) has explicit § 25.631 (empennage bird strike) and § 25.362 (supplementary conditions)
+- Part 33 (engines) has § 33.76 (bird ingestion) - CRITICAL for engine bird strike
+- Part 29 (rotorcraft) has § 29.631 (bird strike damage)
+- For comprehensive bird strike coverage, include: 25.631, 25.362, 33.76, 29.631
 
 Respond ONLY with valid JSON matching the exact schema. No markdown, no explanation outside JSON.`;
 

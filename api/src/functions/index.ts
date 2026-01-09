@@ -287,8 +287,8 @@ app.http('reindex', {
                             if (seenGuids.has(doc.documentGuid)) continue;
                             seenGuids.add(doc.documentGuid);
                             
-                            const enqueued = await enqueueForIndexing(doc, docType);
-                            if (enqueued) {
+                            const enqueued = await enqueueForIndexing([{ doc, docType }]);
+                            if (enqueued > 0) {
                                 enqueuedDocs.push(`${docType} ${doc.documentNumber}`);
                                 context.log(`Enqueued: ${docType} ${doc.documentNumber}`);
                             }

@@ -183,7 +183,7 @@ export async function getQueueStats(): Promise<QueueStats> {
 
 /**
  * Process a single queue message (called by queue trigger function)
- * Downloads PDF, extracts text, and indexes to vector store
+ * Downloads PDF, extracts text, chunks with Claude, and indexes each chunk
  * 
  * @param message - The queue message to process
  * @returns true if processed successfully, false otherwise
@@ -192,6 +192,7 @@ export async function processQueueMessage(message: IndexQueueMessage): Promise<b
   const { DRSClient } = await import('./drsClient');
   const { indexDocument, getIndexedDocumentNumbers } = await import('./vectorSearch');
   const { hasEmbeddingService } = await import('./embeddings');
+  const { chunkDocumentWithClaude, needsChunking } = await import('./chunker');
   
   const startTime = Date.now();
   console.log(`⏳ Processing: ${message.docType} ${message.documentNumber}`);
@@ -228,28 +229,40 @@ export async function processQueueMessage(message: IndexQueueMessage): Promise<b
       return false;
     }
     
-    // 4. Prepare document for indexing
-    const maxChars = 50000;
-    const truncatedText = result.text.length > maxChars
-      ? result.text.substring(0, maxChars) + "\n\n[Document truncated due to length...]"
-      : result.text;
+    // 4. Create base document ID (parent ID for all chunks)
+    const parentDocId = `drs-${message.docType.toLowerCase()}-${message.documentNumber.replace(/[^a-zA-Z0-9]/g, '-')}`;
     
-    const docId = `drs-${message.docType.toLowerCase()}-${message.documentNumber.replace(/[^a-zA-Z0-9]/g, '-')}`;
+    // 5. Chunk the document with Claude (or fallback)
+    const chunkResult = await chunkDocumentWithClaude(result.text, message.title);
+    console.log(`  ✂️ Split into ${chunkResult.totalChunks} chunks (${chunkResult.method})`);
     
-    const docToIndex = {
-      id: docId,
-      documentType: message.docType,
-      documentNumber: message.documentNumber,
-      title: message.title,
-      content: truncatedText,
-      source: 'FAA DRS',
-    };
-    
-    // 5. Index the document (embedding generated internally)
-    await indexDocument(docToIndex);
+    // 6. Index each chunk separately
+    let indexedCount = 0;
+    for (const chunk of chunkResult.chunks) {
+      const chunkId = chunkResult.totalChunks > 1 
+        ? `${parentDocId}-chunk-${chunk.index}`
+        : parentDocId;
+      
+      const docToIndex = {
+        id: chunkId,
+        documentType: message.docType,
+        documentNumber: message.documentNumber,
+        title: message.title,
+        content: chunk.content,
+        source: 'FAA DRS',
+        // Chunking metadata
+        documentId: parentDocId,
+        chunkIndex: chunk.index,
+        totalChunks: chunkResult.totalChunks,
+        chunkTitle: chunk.title,
+      };
+      
+      await indexDocument(docToIndex);
+      indexedCount++;
+    }
     
     const elapsed = Date.now() - startTime;
-    console.log(`  ✅ Indexed: ${message.docType} ${message.documentNumber} (${elapsed}ms)`);
+    console.log(`  ✅ Indexed ${indexedCount} chunks: ${message.docType} ${message.documentNumber} (${elapsed}ms)`);
     return true;
     
   } catch (error) {

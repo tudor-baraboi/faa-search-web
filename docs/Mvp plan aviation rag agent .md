@@ -38,6 +38,8 @@
 | Clarifying Questions (Stage 1) | 🔄 Planned | Part of above | Pre-fetch clarity check |
 | Narrowing Questions (Stage 2) | 🔄 Planned | Part of above | Post-fetch clarity check |
 | Azure OpenAI Migration | ⏸️ Optional | ~2h | Replace Claude for Azure billing |
+| Token Optimization | 🔄 Planned | ~4h | Chunking + context reduction |
+| Document Chunking | 🔄 Planned | ~6h | Split large docs into ~2K char chunks |
 
 ### ❌ Not in MVP
 
@@ -47,6 +49,259 @@
 | Compliance matrix generation | Phase 3 |
 | User authentication | Phase 2+ |
 | Proactive DRS monitoring | Phase 4 |
+
+---
+
+## Token Optimization Strategy
+
+### Current Problem (January 2026)
+
+Each query consumes excessive Claude tokens due to:
+
+| Component | Current Setting | Token Impact |
+|-----------|-----------------|--------------|
+| Query classifier | `claude-sonnet-4`, 500 max output | ~1,000+ input tokens per call |
+| Answer generation | `claude-sonnet-4`, 2048 max output | ~1,000+ input tokens per call |
+| Document context | Up to **8 docs × 50,000 chars** each | **Potentially 100K+ tokens** 😱 |
+| Conversation history | Full history appended | Growing unbounded |
+| System prompt | ~1,500 chars detailed instructions | ~400 tokens × 2 calls |
+
+**Root Cause:** No document chunking - each PDF is stored as a single 50K char blob.
+
+### Token Consumption Per Request
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ CLAUDE API CALL 1: Query Classification                         │
+│                                                                 │
+│   Input:  System prompt (~400 tokens)                          │
+│         + User question (~50 tokens)                           │
+│   Output: Classification JSON (~100 tokens)                    │
+│   ─────────────────────────────────────────                    │
+│   Total: ~550 tokens                                           │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ CLAUDE API CALL 2: Answer Generation                            │
+│                                                                 │
+│   Input:  System prompt (~400 tokens)                          │
+│         + Document context (8 docs × ~12,500 tokens = 100K!) ← PROBLEM
+│         + Conversation history (~500 tokens)                   │
+│         + User question (~50 tokens)                           │
+│   Output: Answer (~500-1000 tokens)                            │
+│   ─────────────────────────────────────────                    │
+│   Total: ~100K+ tokens per query! 💸                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Optimization Opportunities
+
+| # | Optimization | Impact | Effort | Priority |
+|---|--------------|--------|--------|----------|
+| 1 | **Document chunking** | 80-90% reduction | 6h | 🔴 Critical |
+| 2 | **Reduce max results** | 50% reduction | 5min | 🟢 Quick win |
+| 3 | **Use Haiku for classifier** | 90% cost reduction on classification | 5min | 🟢 Quick win |
+| 4 | **Shorter system prompt** | 10-20% reduction | 30min | 🟡 Medium |
+| 5 | **Truncate conversation history** | Variable | 15min | 🟡 Medium |
+| 6 | **Reduce max_tokens output** | Cost ceiling | 5min | 🟢 Quick win |
+
+### Quick Wins (Implement Immediately)
+
+```typescript
+// 1. Reduce vector search results (ragPipeline.ts line 37)
+maxResults: parseInt(process.env.VECTOR_SEARCH_MAX_RESULTS || '4'), // Was 8
+
+// 2. Use Haiku for classification (queryClassifier.ts line 123)
+model: "claude-3-haiku-20240307", // Was claude-sonnet-4
+
+// 3. Reduce max output tokens (ragPipeline.ts line 354)
+max_tokens: 1024, // Was 2048
+
+// 4. Truncate history more aggressively (ragPipeline.ts line 416)
+const content = turn.content.length > 200 
+  ? turn.content.substring(0, 200) + '...' 
+  : turn.content; // Was 500
+```
+
+### Document Chunking Plan (Critical)
+
+See detailed plan in next section.
+
+---
+
+## Document Chunking Implementation
+
+### Why Chunking Matters
+
+| Metric | Without Chunking | With Chunking (2K) |
+|--------|------------------|-------------------|
+| Tokens per doc | ~12,500 | ~500 |
+| Context for 4 docs | ~50,000 tokens | ~2,000 tokens |
+| Cost per query | ~$0.15 | ~$0.006 |
+| **Savings** | — | **96%** |
+
+### Chunking Strategy
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ BEFORE: Single Document (50K chars)                             │
+│                                                                 │
+│   AC 23-8C Full Text ─────────────────────────────────────────▶│
+│   [═══════════════════════════════════════════════════════════] │
+│                     50,000 characters                           │
+│                     = 1 embedding                               │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ AFTER: Chunked Document (2K chars each, 200 char overlap)       │
+│                                                                 │
+│   AC 23-8C Chunk 1 ──▶ [═══════] 2,000 chars                   │
+│   AC 23-8C Chunk 2 ──▶   [═══════] 2,000 chars (200 overlap)   │
+│   AC 23-8C Chunk 3 ──▶     [═══════] 2,000 chars               │
+│   ...                                                           │
+│   AC 23-8C Chunk 25 ─▶                              [═══════]   │
+│                                                                 │
+│   = 25 embeddings (more precise retrieval)                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Chunk Configuration
+
+```typescript
+const CHUNK_CONFIG = {
+  chunkSize: 2000,        // Characters per chunk
+  chunkOverlap: 200,      // Overlap between chunks
+  minChunkSize: 500,      // Don't create tiny chunks
+  maxChunksPerDoc: 50,    // Safety limit
+  separators: [           // Split on these (in order)
+    '\n## ',              // Markdown H2
+    '\n### ',             // Markdown H3
+    '\n\n',               // Paragraph
+    '\n',                 // Line
+    '. ',                 // Sentence
+    ' ',                  // Word
+  ],
+};
+```
+
+### Index Schema Changes
+
+```typescript
+// Current: One document = one index entry
+interface FADocument {
+  id: string;
+  documentNumber: string;
+  title: string;
+  content: string;           // Full 50K text
+  contentVector: number[];   // Single embedding
+}
+
+// New: One document = multiple chunk entries
+interface FADocumentChunk {
+  id: string;                // e.g., "drs-ac-23-8c-chunk-3"
+  documentId: string;        // Parent doc: "drs-ac-23-8c"
+  documentNumber: string;    // "AC 23-8C"
+  title: string;             // Same for all chunks
+  chunkIndex: number;        // 0, 1, 2, ...
+  chunkContent: string;      // ~2K chars
+  contentVector: number[];   // Embedding of this chunk
+  source: string;
+  lastIndexed: string;
+}
+```
+
+### Implementation Steps
+
+| Step | File | Change |
+|------|------|--------|
+| 1 | `vectorSearch.ts` | Add `splitIntoChunks()` function |
+| 2 | `vectorSearch.ts` | Update index schema with `chunkIndex`, `documentId` |
+| 3 | `indexQueue.ts` | Call chunker before indexing |
+| 4 | `ragPipeline.ts` | Dedupe chunks from same doc in results |
+| 5 | Migration script | Re-index existing documents with chunking |
+
+### Chunking Function
+
+```typescript
+// api/src/lib/chunker.ts
+
+interface Chunk {
+  content: string;
+  index: number;
+  startChar: number;
+  endChar: number;
+}
+
+export function splitIntoChunks(
+  text: string,
+  options: {
+    chunkSize?: number;
+    chunkOverlap?: number;
+    minChunkSize?: number;
+  } = {}
+): Chunk[] {
+  const {
+    chunkSize = 2000,
+    chunkOverlap = 200,
+    minChunkSize = 500,
+  } = options;
+
+  const chunks: Chunk[] = [];
+  let startChar = 0;
+  let index = 0;
+
+  while (startChar < text.length) {
+    let endChar = Math.min(startChar + chunkSize, text.length);
+    
+    // Try to break at sentence boundary
+    if (endChar < text.length) {
+      const lastPeriod = text.lastIndexOf('. ', endChar);
+      const lastNewline = text.lastIndexOf('\n', endChar);
+      const breakPoint = Math.max(lastPeriod, lastNewline);
+      
+      if (breakPoint > startChar + minChunkSize) {
+        endChar = breakPoint + 1;
+      }
+    }
+
+    chunks.push({
+      content: text.slice(startChar, endChar).trim(),
+      index,
+      startChar,
+      endChar,
+    });
+
+    startChar = endChar - chunkOverlap;
+    index++;
+  }
+
+  return chunks.filter(c => c.content.length >= minChunkSize);
+}
+```
+
+### Migration Plan
+
+```bash
+# 1. Update index schema (adds new fields, non-breaking)
+# 2. Deploy new code with chunking
+# 3. Clear existing index
+az search index delete --name faa-documents --service-name faa-ai-search
+
+# 4. Recreate index (auto-created on first indexDocument call)
+# 5. Re-trigger indexing for all documents
+#    - Query DRS for document list
+#    - Enqueue each for background processing
+```
+
+### Expected Results
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Avg tokens per query | ~100,000 | ~4,000 |
+| Cost per query | ~$0.15 | ~$0.006 |
+| Index size | 41 entries | ~500 entries |
+| Retrieval precision | Low (whole doc) | High (relevant chunk) |
 
 ---
 

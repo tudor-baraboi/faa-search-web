@@ -223,3 +223,107 @@ app.http('health', {
         };
     }
 });
+
+// Reindex endpoint - clears index and re-queues all documents for chunked indexing
+app.http('reindex', {
+    methods: ['POST'],
+    authLevel: 'anonymous',
+    route: 'reindex',
+    handler: async (request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> => {
+        context.log(`Reindex endpoint called`);
+        
+        try {
+            const { deleteAllDocuments, getIndexStats } = await import('../lib/vectorSearch');
+            const { enqueueForIndexing, hasIndexQueue, getQueueStats } = await import('../lib/indexQueue');
+            const { DRSClient } = await import('../lib/drsClient');
+            const { getChunkConfig } = await import('../lib/chunker');
+            
+            // Parse options from request body
+            const body = await request.json().catch(() => ({})) as { 
+                clearIndex?: boolean;
+                docTypes?: string[];
+                limit?: number;
+            };
+            
+            const clearIndex = body.clearIndex !== false; // Default true
+            const docTypes = body.docTypes || ['AC']; // Default to ACs only
+            const limit = body.limit || 50; // Default 50 docs
+            
+            // Check prerequisites
+            if (!hasIndexQueue()) {
+                return {
+                    status: 500,
+                    jsonBody: { error: 'Index queue not available. Check Azure Storage configuration.' }
+                };
+            }
+            
+            // Step 1: Clear existing index if requested
+            let deletedCount = 0;
+            if (clearIndex) {
+                context.log('Clearing existing index...');
+                deletedCount = await deleteAllDocuments();
+                context.log(`Deleted ${deletedCount} documents from index`);
+            }
+            
+            // Step 2: Search DRS for documents to reindex
+            const drsClient = new DRSClient();
+            const enqueuedDocs: string[] = [];
+            
+            for (const docType of docTypes) {
+                context.log(`Searching DRS for ${docType} documents...`);
+                
+                // Search for common part numbers
+                const partSearches = ['Part 23', 'Part 25', 'Part 27', 'Part 33', 'Part 35', 'Part 43'];
+                const seenGuids = new Set<string>();
+                
+                for (const searchTerm of partSearches) {
+                    if (enqueuedDocs.length >= limit) break;
+                    
+                    try {
+                        const results = await drsClient.searchDocuments(searchTerm, docType);
+                        
+                        for (const doc of results.slice(0, 10)) {
+                            if (enqueuedDocs.length >= limit) break;
+                            if (seenGuids.has(doc.documentGuid)) continue;
+                            seenGuids.add(doc.documentGuid);
+                            
+                            const enqueued = await enqueueForIndexing(doc, docType);
+                            if (enqueued) {
+                                enqueuedDocs.push(`${docType} ${doc.documentNumber}`);
+                                context.log(`Enqueued: ${docType} ${doc.documentNumber}`);
+                            }
+                        }
+                    } catch (err) {
+                        context.warn(`Failed to search DRS for "${searchTerm}":`, err);
+                    }
+                }
+            }
+            
+            // Get queue stats
+            const queueStats = await getQueueStats();
+            const chunkConfig = getChunkConfig();
+            
+            return {
+                status: 200,
+                jsonBody: {
+                    success: true,
+                    deletedFromIndex: deletedCount,
+                    enqueuedForIndexing: enqueuedDocs.length,
+                    documents: enqueuedDocs,
+                    queueStats,
+                    chunkConfig,
+                    message: `Cleared ${deletedCount} docs, enqueued ${enqueuedDocs.length} for chunked reindexing`
+                }
+            };
+            
+        } catch (error) {
+            context.error('Reindex error:', error);
+            return {
+                status: 500,
+                jsonBody: { 
+                    error: error instanceof Error ? error.message : String(error) 
+                }
+            };
+        }
+    }
+});

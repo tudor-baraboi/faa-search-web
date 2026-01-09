@@ -190,12 +190,26 @@ export class AircraftCertificationRAG {
           console.log(`✅ Vector search found ${relevantResults.length} relevant docs (scores: ${relevantResults.map(r => r.score?.toFixed(2)).join(', ')})`);
           vectorSearchUsed = true;
           
+          // Dedupe chunks from same parent document - keep highest scoring chunk per doc
+          const seenParentDocs = new Map<string, { doc: FADocument; score: number }>();
           for (const result of relevantResults) {
             const doc = result.document;
+            const parentId = doc.documentId || doc.id; // Use documentId for chunks, id for non-chunked
+            const existing = seenParentDocs.get(parentId);
+            
+            if (!existing || (result.score || 0) > existing.score) {
+              seenParentDocs.set(parentId, { doc, score: result.score || 0 });
+            }
+          }
+          
+          const dedupedResults = Array.from(seenParentDocs.values());
+          console.log(`📄 Deduped to ${dedupedResults.length} unique documents from ${relevantResults.length} chunks`);
+          
+          for (const { doc, score } of dedupedResults) {
             vectorDocs.push({
               title: doc.title,
               chunk: doc.content,
-              score: result.score || 0.8
+              score: score
             });
             
             // Track sources by type

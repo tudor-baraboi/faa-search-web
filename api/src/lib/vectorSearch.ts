@@ -20,10 +20,10 @@ const getSearchConfig = () => ({
 
 // Document interface for the search index
 export interface FADocument {
-  id: string;                    // Unique document ID (e.g., "cfr-14-23-2240" or "ac-23-8b")
+  id: string;                    // Unique document ID (e.g., "cfr-14-23-2240" or "ac-23-8b-chunk-3")
   documentType: string;          // Document type (e.g., "eCFR", "AC", "AD", "TSO")
   title: string;                 // Document title (clean, without metadata prefix)
-  content: string;               // Full text content
+  content: string;               // Chunk text content (~2K chars)
   contentVector?: number[];      // Embedding vector (1024 dims for Cohere)
   cfrPart?: number;              // CFR part number (e.g., 23, 25)
   cfrSection?: string;           // CFR section (e.g., "2240")
@@ -31,6 +31,11 @@ export interface FADocument {
   effectiveDate?: string;        // ISO date string
   source?: string;               // Source URL or reference
   lastIndexed: Date | string;    // When indexed
+  // Chunking metadata
+  documentId?: string;           // Parent document ID (e.g., "drs-ac-23-8c")
+  chunkIndex?: number;           // 0-based chunk index within parent doc
+  totalChunks?: number;          // Total chunks for this parent document
+  chunkTitle?: string;           // Section title for this chunk (if identified)
   // Additional metadata for future queries
   revision?: string;             // Document revision (e.g., "A", "B", "C")
   changeNumber?: string;         // Change number (e.g., "CHG 1", "CHG 2")
@@ -134,6 +139,11 @@ export async function ensureIndexExists(): Promise<void> {
       { name: 'effectiveDate', type: 'Edm.String', filterable: true, sortable: true },
       { name: 'source', type: 'Edm.String' },
       { name: 'lastIndexed', type: 'Edm.String', filterable: true, sortable: true },
+      // Chunking metadata fields
+      { name: 'documentId', type: 'Edm.String', filterable: true },  // Parent document ID
+      { name: 'chunkIndex', type: 'Edm.Int32', filterable: true, sortable: true },
+      { name: 'totalChunks', type: 'Edm.Int32', filterable: true },
+      { name: 'chunkTitle', type: 'Edm.String', searchable: true },
       // Additional metadata fields
       { name: 'revision', type: 'Edm.String', filterable: true, facetable: true },
       { name: 'changeNumber', type: 'Edm.String', filterable: true, facetable: true },
@@ -406,5 +416,85 @@ export async function getIndexedDocumentNumbers(
     // Index might not exist yet
     console.warn('⚠️ Could not query indexed documents:', error);
     return new Set();
+  }
+}
+
+/**
+ * Delete all documents from the index
+ * Used for reindexing with new chunking strategy
+ */
+export async function deleteAllDocuments(): Promise<number> {
+  if (!hasVectorSearch()) return 0;
+  
+  try {
+    const client = getSearchClient();
+    
+    // Get all document IDs
+    const searchResults = await client.search('*', {
+      top: 5000,
+      select: ['id'],
+      queryType: 'simple',
+    });
+    
+    const ids: string[] = [];
+    for await (const result of searchResults.results) {
+      const doc = result.document as FADocument;
+      ids.push(doc.id);
+    }
+    
+    if (ids.length === 0) {
+      console.log('No documents to delete');
+      return 0;
+    }
+    
+    // Delete in batches of 1000
+    const BATCH_SIZE = 1000;
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+      const batch = ids.slice(i, i + BATCH_SIZE);
+      // deleteDocuments expects array of documents with key field
+      await client.deleteDocuments('id', batch);
+      console.log(`Deleted batch ${Math.floor(i / BATCH_SIZE) + 1}: ${batch.length} documents`);
+    }
+    
+    console.log(`✅ Deleted ${ids.length} documents from index`);
+    return ids.length;
+  } catch (error) {
+    console.error('Failed to delete documents:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get index statistics
+ */
+export async function getIndexStats(): Promise<{ documentCount: number; chunkCount: number }> {
+  if (!hasVectorSearch()) return { documentCount: 0, chunkCount: 0 };
+  
+  try {
+    const client = getSearchClient();
+    
+    const searchResults = await client.search('*', {
+      top: 5000,
+      select: ['id', 'documentId', 'chunkIndex'],
+      queryType: 'simple',
+    });
+    
+    const parentDocs = new Set<string>();
+    let chunkCount = 0;
+    
+    for await (const result of searchResults.results) {
+      const doc = result.document as FADocument;
+      chunkCount++;
+      if (doc.documentId) {
+        parentDocs.add(doc.documentId);
+      } else {
+        parentDocs.add(doc.id);
+      }
+    }
+    
+    return { documentCount: parentDocs.size, chunkCount };
+  } catch (error) {
+    console.warn('Could not get index stats:', error);
+    return { documentCount: 0, chunkCount: 0 };
   }
 }

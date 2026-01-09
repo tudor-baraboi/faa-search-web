@@ -194,6 +194,7 @@ app.http('health', {
         const { hasVectorSearch } = await import('../lib/vectorSearch');
         const { hasEmbeddingService } = await import('../lib/embeddings');
         const { getQueueStats, hasIndexQueue } = await import('../lib/indexQueue');
+        const { getIndexStats } = await import('../lib/vectorSearch');
 
         // Get queue statistics if available
         let indexQueue = null;
@@ -204,6 +205,14 @@ app.http('health', {
                 context.warn('Failed to get queue stats:', err);
             }
         }
+        
+        // Get index statistics
+        let indexStats = null;
+        try {
+            indexStats = await getIndexStats();
+        } catch (err) {
+            context.warn('Failed to get index stats:', err);
+        }
 
         const config = {
             hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
@@ -213,6 +222,7 @@ app.http('health', {
             hasEmbeddingService: hasEmbeddingService(),
             hasIndexQueue: hasIndexQueue(),
             indexQueue,
+            indexStats,
             nodeVersion: process.version,
             platform: process.platform
         };

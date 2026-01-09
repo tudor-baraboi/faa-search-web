@@ -3,6 +3,9 @@ import { AircraftCertificationRAG } from "../lib/ragPipeline";
 import { AskQuestionRequest, AskQuestionResponse } from "../lib/types";
 import { getConversationStore, ConversationTurn } from "../lib/conversationStore";
 
+// Import queue-triggered functions to register them with the Functions runtime
+import "./indexWorker";
+
 // Ask endpoint - main RAG pipeline
 app.http('ask', {
     methods: ['POST'],

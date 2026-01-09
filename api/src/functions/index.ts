@@ -242,11 +242,13 @@ app.http('reindex', {
             const body = await request.json().catch(() => ({})) as { 
                 clearIndex?: boolean;
                 docTypes?: string[];
+                searchTerms?: string[];
                 limit?: number;
             };
             
             const clearIndex = body.clearIndex !== false; // Default true
             const docTypes = body.docTypes || ['AC']; // Default to ACs only
+            const searchTerms = body.searchTerms; // Custom search terms (optional)
             const limit = body.limit || 50; // Default 50 docs
             
             // Check prerequisites
@@ -272,11 +274,13 @@ app.http('reindex', {
             for (const docType of docTypes) {
                 context.log(`Searching DRS for ${docType} documents...`);
                 
-                // Search for common part numbers
-                const partSearches = ['Part 23', 'Part 25', 'Part 27', 'Part 33', 'Part 35', 'Part 43'];
+                // Use custom search terms if provided, otherwise default to common part numbers
+                const searchList = searchTerms && searchTerms.length > 0 
+                    ? searchTerms 
+                    : ['Part 23', 'Part 25', 'Part 27', 'Part 33', 'Part 35', 'Part 43'];
                 const seenGuids = new Set<string>();
                 
-                for (const searchTerm of partSearches) {
+                for (const searchTerm of searchList) {
                     if (enqueuedDocs.length >= limit) break;
                     
                     try {
